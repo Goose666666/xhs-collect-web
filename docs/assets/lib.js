@@ -230,14 +230,53 @@ const Trade = {
 
   async load() {
     Trade.now = industryOf(asText(await getSetting('industry', 'love')));
+    await Trade.loadTalks();
     return Trade.now;
   },
 
   async switchTo(key) {
     Trade.now = industryOf(key);
     await setSetting('industry', Trade.now.key);
+    // 话术是按行业各存各的，换过去要重读，不然还用着上一个行业那几条
+    await Trade.loadTalks();
     return Trade.now;
   },
+};
+
+// ---------- 评论话术 ----------
+//
+// 话术必须能自己改。同一句话在找对象行业说得通，换到医美就不知所云，
+// 而对接人手上有美容、情感、恋爱、交友好几摊生意。
+//
+// 每条记着勾没勾，发评论时只从勾上的里面随机挑。
+// 不想删又不想发的就取消勾选。
+
+function talksKey(industryKey) {
+  return 'talks_' + industryKey;
+}
+
+Trade.talks = [];
+
+Trade.pickedTalks = function () {
+  return Trade.talks.filter((t) => t.on).map((t) => t.text);
+};
+
+Trade.loadTalks = async function () {
+  const raw = await getSetting(talksKey(Trade.now.key), null);
+  if (Array.isArray(raw) && raw.length) {
+    Trade.talks = raw.map((e) => ({
+      text: asText(isMap(e) ? e.text : e),
+      on: isMap(e) ? e.on !== false : true,
+    }));
+  } else {
+    // 第一次进这个行业，把预置的几条铺进去，都默认勾上
+    Trade.talks = Trade.now.talks.map((t) => ({ text: t, on: true }));
+  }
+  return Trade.talks;
+};
+
+Trade.saveTalks = async function () {
+  await setSetting(talksKey(Trade.now.key), Trade.talks);
 };
 
 

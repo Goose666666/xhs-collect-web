@@ -401,3 +401,107 @@ async function counts() {
   const comments = await getAll('comments');
   return { notes: notes.length, comments: comments.length };
 }
+
+// ---------- 触达流水 ----------
+//
+// 发出去的每一条都要留痕：发给谁、发的什么、成没成、当时页面回了什么。
+// 不记的话一天几条额度烧完了都不知道烧在哪。
+
+async function touches(limit) {
+  const all = await getAll('touches');
+  all.sort((a, b) => asInt(b.id) - asInt(a.id));
+  return limit ? all.slice(0, limit) : all;
+}
+
+// 拉黑一个人，以后一条都不再发给他。
+async function blockUser(userId, nickname, why) {
+  if (!userId) return;
+  await addTouch({
+    kind: '拉黑',
+    user_id: userId,
+    nickname: nickname || '',
+    text: why || '手动拉黑',
+    status: '成功',
+  });
+}
+
+// 上一条是什么时候发的。用来拦住两条贴在一起发。
+async function lastTouchAt() {
+  const all = await getAll('touches');
+  let best = '';
+  for (const t of all) {
+    if (t.kind === '拉黑') continue;
+    const at = asText(t.created_at);
+    if (at > best) best = at;
+  }
+  return best;
+}
+
+// 离上一条过去了多少秒。没发过就是很大的数。
+async function secondsSinceLastTouch() {
+  const at = await lastTouchAt();
+  if (!at) return 1e9;
+  // 存的是东八区的字符串，拿同一套换算比，不碰设备时区
+  const now = nowCst();
+  return Math.round((Date.parse(now.replace(' ', 'T') + 'Z') -
+    Date.parse(at.replace(' ', 'T') + 'Z')) / 1000);
+}
+
+// 今天这类互动成功了多少次。用来卡每天的上限，别把号做没了。
+async function touchCountToday(kind) {
+  const all = await getAll('touches');
+  const day = todayCst();
+  return all.filter((t) => t.kind === kind && t.status === '成功' &&
+    asText(t.created_at).slice(0, 10) === day).length;
+}
+
+// 试过的人，不管成没成都不再试。
+//
+// 只跳过成功的话，失败的下一轮又排进来。同一个人被连着试好几次，
+// 而且有一种失败叫查不到发出去的消息，那种情况话可能已经发出去了
+// 只是没读到证据，再发一遍就是给人连发两条。
+async function triedIds(kind) {
+  const all = await touches(2000);
+  const out = new Set();
+  for (const t of all) {
+    if (t.kind === kind && t.user_id) out.add(t.user_id);
+  }
+  return out;
+}
+
+// 发过谁，他当初说了什么，我们回了什么。
+//
+// 流水表里只有我们发的话，对方原话在评论表里，按 user_id 关联。
+// 一个人可能在好几条帖子底下都留过言，取最近那条，
+// 因为话术就是照着最近那条生成的。
+async function sentList(limit, trade) {
+  const all = await touches(limit || 500);
+  const comments = await getAll('comments');
+  const byUser = {};
+  for (const c of comments) {
+    if (!c.user_id) continue;
+    const old = byUser[c.user_id];
+    if (!old || asText(c.comment_time) > asText(old.comment_time)) {
+      byUser[c.user_id] = c;
+    }
+  }
+  const out = [];
+  for (const t of all) {
+    if (t.kind !== '私信') continue;
+    const c = byUser[t.user_id] || {};
+    const tr = asTrade(c.trade || t.trade);
+    if (trade && tr !== trade) continue;
+    out.push({
+      nickname: asText(t.nickname),
+      user_id: asText(t.user_id),
+      text: asText(t.text),
+      status: asText(t.status),
+      detail: asText(t.detail),
+      at: asText(t.created_at),
+      said: asText(c.content),
+      site: asSite(c.site || t.site),
+      trade: tr,
+    });
+  }
+  return out;
+}

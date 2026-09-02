@@ -17,7 +17,9 @@ const Buckets = {
   _seen: new Set(),
 
   add(url, body) {
-    const name = bucketOf(url);
+    // 两个平台的路径没有交集，所以两张表都试一遍就行，
+    // 不用先知道当前在采哪个平台。
+    const name = bucketOf(url) || douyinBucketOf(url);
     if (!name || !body) return;
     const sig = name + '|' + url.length + '|' + body.length;
     if (this._seen.has(sig)) return;

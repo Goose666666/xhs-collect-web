@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         获客助手
 // @namespace    https://github.com/Goose666666/xhs-collect-web
-// @version      1.0.0
-// @description  在小红书页面里采集帖子和评论，挑出想找对象的人，生成能直接发的私信
+// @version      1.1.0
+// @description  在小红书和抖音页面里采集帖子和评论，挑出想找对象的人，发私信和评论
 // @author       xhs-collect-web
 // @match        https://www.xiaohongshu.com/*
 // @match        https://xiaohongshu.com/*
+// @match        https://www.douyin.com/*
 // @run-at       document-start
 // @grant        none
 // @inject-into  page
@@ -481,6 +482,344 @@ function buildComment(c, noteId, parentId) {
 }
 
 
+// ===== 22-douyin.js =====
+// 抖音的接口解析。跟小红书那套一个路子：页面自己发请求，我们只截返回。
+//
+// 抖音的签名比小红书还严，参数里带 a_bogus 和 msToken，自己拼请求几乎不可能，
+// 但只要让网页自己去请求，返回就是完整的，跟人工浏览没有区别。
+//
+// 逐条对着手机版 lib/local/douyin.dart 搬的，产出的字段跟小红书那套对齐，
+// 上层不用分平台处理。
+
+// 接口路径到桶名的映射。
+//
+// 抖音的搜索接口有好几个入口，通用搜索和视频搜索返回的结构一样，所以都归到 search。
+const kDouyinRoutes = [
+  ['/general/search/single', 'search'],
+  ['/search/item', 'search'],
+  ['/search/single', 'search'],
+  ['/comment/list/reply', 'sub_comment'],
+  ['/comment/list', 'comment'],
+  ['/aweme/detail', 'feed'],
+  ['/aweme/post', 'user_posted'],
+  ['/user/profile/other', 'user_info'],
+];
+
+// 这个地址是不是抖音的接口，是的话属于哪一类。
+function douyinBucketOf(url) {
+  const s = asText(url);
+  if (!s.includes('/aweme/')) return '';
+  const path = s.split('?')[0].replace(/\/v\d+\//g, '/');
+  for (const [frag, name] of kDouyinRoutes) {
+    if (path.includes(frag)) return name;
+  }
+  return '';
+}
+
+// 抖音的数字有时是字符串有时是数字，统一按第一串数字读。
+function dyInt(v) {
+  if (typeof v === 'number') return Math.round(v);
+  const m = asText(v).match(/\d+/);
+  return m ? parseInt(m[0], 10) : 0;
+}
+
+// 作品地址。抖音的视频页就是这个格式。
+function videoUrl(id) {
+  return id ? 'https://www.douyin.com/video/' + id : '';
+}
+
+// 抖音的搜索页，type=general 是综合，视频和用户都在里面。
+function douyinSearchUrl(keyword) {
+  return 'https://www.douyin.com/search/' +
+    encodeURIComponent(asText(keyword).trim()) + '?type=general';
+}
+
+// 主页地址只认 sec_uid，那是一串带字母的长码。
+//
+// 纯数字的是内部 uid，拿它拼出来的地址会被重定向到别处，
+// 程序在错的页面上找私信按钮，找到的多半是顶栏那个消息入口。
+function douyinUserUrl(secUid) {
+  return secUid ? 'https://www.douyin.com/user/' + secUid : '';
+}
+
+function canOpenDouyinProfile(userId) {
+  const s = asText(userId);
+  // 纯数字的是内部 uid，开不了
+  return s.length > 0 && /[A-Za-z_-]/.test(s);
+}
+
+// 视频封面。抖音给一串候选地址，取第一个能用的。
+function dyCover(aweme) {
+  for (const key of ['video', 'cover', 'images']) {
+    const v = aweme[key];
+    if (isMap(v)) {
+      for (const k of ['origin_cover', 'cover', 'dynamic_cover']) {
+        const urls = listOf(mapOf(v[k]).url_list);
+        if (urls.length) return asText(urls[0]).trim();
+      }
+    }
+    if (Array.isArray(v) && v.length) {
+      const urls = listOf(mapOf(v[0]).url_list);
+      if (urls.length) return asText(urls[0]).trim();
+    }
+  }
+  return '';
+}
+
+// 图文作品的全部图片。纯视频没有这一项。
+function dyImages(aweme) {
+  const out = [];
+  for (const it of listOf(aweme.images)) {
+    const urls = listOf(mapOf(it).url_list);
+    if (urls.length) out.push(asText(urls[0]).trim());
+  }
+  return out.join(' ');
+}
+
+// 抖音没有单独的标题，第一行就是标题。
+function firstLine(s) {
+  const one = asText(s).split(/[\n。！!？?]/)[0].trim();
+  if (!one) return s.length > 30 ? s.slice(0, 30) : s;
+  return one.length > 40 ? one.slice(0, 40) : one;
+}
+
+function dyTopics(aweme) {
+  const out = [];
+  for (const t of listOf(aweme.text_extra)) {
+    const name = asText(mapOf(t).hashtag_name).trim();
+    if (name) out.push('#' + name);
+  }
+  return out.join(' ');
+}
+
+// 属地。抖音给的是 IP属地:重庆 这种带前缀的写法。
+function dyPlace(s) {
+  return asText(s)
+    .replace(/^IP属地[:：]?/, '')
+    .replace(/^IP[:：]?/, '')
+    .replace('中国', '')
+    .trim();
+}
+
+// 属地藏在好几个位置，接口版本不同给的键还不一样，挨个试，谁先有值用谁的。
+//
+// CN、中国这种国家级的值等于没说，红娘要的是城市。
+// 抖音只在评论里给城市，作品本身给到国家为止。
+function dyIp(aweme, author) {
+  for (const v of [
+    aweme.ip_attribution,
+    author.ip_location,
+    mapOf(aweme.author).ip_location,
+    mapOf(aweme.anchor_info).extra,
+    aweme.region,
+  ]) {
+    const s = dyPlace(asText(v));
+    if (!s || s.length > 8) continue;
+    if (/^(CN|China|中国|cn)$/.test(s)) continue;
+    return s;
+  }
+  return '';
+}
+
+// 一条作品。抖音把视频和图文都叫 aweme，结构一样。
+function noteFromAweme(aweme, keyword) {
+  const id = asText(aweme.aweme_id !== undefined ? aweme.aweme_id : aweme.awemeId).trim();
+  if (!id) return null;
+  const author = mapOf(aweme.author);
+  const stat = mapOf(aweme.statistics);
+  const desc = asText(aweme.desc).trim();
+
+  return {
+    note_id: id,
+    title: firstLine(desc),
+    content: desc,
+    topics: dyTopics(aweme),
+    // 主页地址只认 sec_uid
+    author_id: asText(author.sec_uid).trim(),
+    author_name: asText(author.nickname).trim(),
+    likes: dyInt(stat.digg_count),
+    comment_cnt: dyInt(stat.comment_count),
+    ip_location: dyIp(aweme, author),
+    publish_time: tsToStr(aweme.create_time),
+    note_url: videoUrl(id),
+    // 抖音不用 token 换取访问权，这一列留空，链接照样能开
+    xsec_token: '',
+    cover: dyCover(aweme),
+    images: dyImages(aweme),
+    keyword: keyword || '',
+    fetched_at: nowCst(),
+    site: '抖音',
+    trade: 'love',
+  };
+}
+
+// 一条评论。
+function commentFromDouyin(c, noteId) {
+  const id = asText(c.cid).trim();
+  if (!id) return null;
+  const user = mapOf(c.user);
+  const reply = asText(c.reply_id).trim();
+  const root = asText(c.reply_to_reply_id).trim();
+  // 回复的回复要挂到根评论上，不然树形对不起来
+  const parent = root && root !== '0' ? root : reply;
+  const pid = parent === '0' ? '' : parent;
+
+  return {
+    comment_id: id,
+    note_id: noteId || asText(c.aweme_id).trim(),
+    parent_id: pid,
+    level: pid ? '二级' : '一级',
+    // 只认 sec_uid。拿数字 uid 拼出来的主页地址打不开，
+    // 会被平台重定向到别处，私信那一步就找不着人。
+    // 宁可这个人不进名单，也不能拿个开不了的地址去发。
+    user_id: asText(user.sec_uid).trim(),
+    nickname: asText(user.nickname).trim(),
+    content: asText(c.text).replace(/\n/g, ' '),
+    likes: dyInt(c.digg_count),
+    sub_count: dyInt(c.reply_comment_total),
+    comment_time: tsToStr(c.create_time),
+    ip_location: dyPlace(asText(c.ip_label)),
+    fetched_at: nowCst(),
+    site: '抖音',
+    trade: 'love',
+  };
+}
+
+// 从搜索结果里取作品。搜索返回的是一层包装，作品在 aweme_info 里。
+function douyinFromSearch(j, keyword) {
+  const out = [];
+  for (const it of listOf(j.data !== undefined ? j.data : j.aweme_list)) {
+    const m = mapOf(it);
+    // 搜索结果里混着用户卡、话题卡这些，只有带 aweme_info 的才是作品
+    const aweme = m.aweme_info !== undefined
+      ? mapOf(m.aweme_info)
+      : (m.aweme_id !== undefined ? m : {});
+    if (!Object.keys(aweme).length) continue;
+    const n = noteFromAweme(aweme, keyword);
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+// 评论接口的地址上带着作品 id，用它把评论挂回作品。
+function douyinNoteIdIn(url) {
+  const s = asText(url);
+  const i = s.indexOf('aweme_id=');
+  if (i < 0) return '';
+  const rest = s.slice(i + 9);
+  const m = rest.match(/[&#]/);
+  return m ? rest.slice(0, m.index) : rest;
+}
+
+// 解析一次拦截到的抖音返回。
+function parseDouyin(url, body, keyword) {
+  const kind = douyinBucketOf(url);
+  if (!kind || !body) return emptyResult();
+  let j;
+  try {
+    j = JSON.parse(body);
+  } catch (e) {
+    return emptyResult();
+  }
+  if (!isMap(j)) return emptyResult();
+
+  const out = {
+    kind: kind,
+    notes: [],
+    comments: [],
+    hasMore: dyInt(j.has_more) === 1,
+    cursor: asText(j.cursor),
+  };
+
+  switch (kind) {
+    case 'search':
+      out.notes = douyinFromSearch(j, keyword || '');
+      return out;
+    case 'user_posted':
+      for (const it of listOf(j.aweme_list)) {
+        const n = noteFromAweme(mapOf(it), keyword || '');
+        if (n) out.notes.push(n);
+      }
+      return out;
+    case 'feed': {
+      const items = j.aweme_detail === undefined || j.aweme_detail === null
+        ? listOf(j.aweme_list)
+        : [j.aweme_detail];
+      for (const it of items) {
+        const n = noteFromAweme(mapOf(it), keyword || '');
+        if (n) out.notes.push(n);
+      }
+      return out;
+    }
+    case 'comment':
+    case 'sub_comment': {
+      const noteId = douyinNoteIdIn(url);
+      for (const it of listOf(j.comments)) {
+        const c = commentFromDouyin(mapOf(it), noteId);
+        if (c) out.comments.push(c);
+      }
+      return out;
+    }
+    default:
+      return out;
+  }
+}
+
+// ---------- 当前在哪个站 ----------
+
+// 平台按域名定，不做开关。
+//
+// 两个站是两个域，浏览器的库是按域分的，抖音采的东西存在 douyin.com 名下，
+// 小红书的存在 xiaohongshu.com 名下，天然分开。做一个假开关让人以为
+// 在小红书页面上能看到抖音的数据，反而是骗人。
+function siteNow() {
+  return location.hostname.includes('douyin.com') ? '抖音' : '小红书';
+}
+
+function onDouyin() {
+  return siteNow() === '抖音';
+}
+
+// 另一个站的首页，顶上那个开关点过去用。
+function otherSiteUrl() {
+  return onDouyin()
+    ? 'https://www.xiaohongshu.com/explore'
+    : 'https://www.douyin.com/';
+}
+
+// 按当前平台解析。两边的返回结构完全不同，但产出同一套字段。
+function parseHere(url, body, keyword) {
+  return onDouyin()
+    ? parseDouyin(url, body, keyword)
+    : parseCaptured(url, body, keyword);
+}
+
+// 按当前平台认接口。
+function bucketHere(url) {
+  return onDouyin() ? douyinBucketOf(url) : bucketOf(url);
+}
+
+// 按当前平台拼搜索页地址。
+function searchUrlHere(keyword) {
+  return onDouyin() ? douyinSearchUrl(keyword) : searchUrl(keyword);
+}
+
+// 按当前平台拼作品地址。
+function noteUrlHere(noteId, token) {
+  return onDouyin() ? videoUrl(noteId) : buildNoteUrl(noteId, token, 'pc_search');
+}
+
+// 按当前平台拼主页地址。
+function userUrlHere(userId) {
+  return onDouyin() ? douyinUserUrl(userId) : buildUserUrl(userId);
+}
+
+// 这个人的主页开得了开不了。抖音要 sec_uid，小红书随便什么 id 都能开。
+function canOpenProfile(userId) {
+  return onDouyin() ? canOpenDouyinProfile(userId) : !!asText(userId);
+}
+
+
 // ===== 30-store.js =====
 // 本地库。存在浏览器的 IndexedDB 里，不上传任何地方。
 //
@@ -886,6 +1225,110 @@ async function counts() {
   return { notes: notes.length, comments: comments.length };
 }
 
+// ---------- 触达流水 ----------
+//
+// 发出去的每一条都要留痕：发给谁、发的什么、成没成、当时页面回了什么。
+// 不记的话一天几条额度烧完了都不知道烧在哪。
+
+async function touches(limit) {
+  const all = await getAll('touches');
+  all.sort((a, b) => asInt(b.id) - asInt(a.id));
+  return limit ? all.slice(0, limit) : all;
+}
+
+// 拉黑一个人，以后一条都不再发给他。
+async function blockUser(userId, nickname, why) {
+  if (!userId) return;
+  await addTouch({
+    kind: '拉黑',
+    user_id: userId,
+    nickname: nickname || '',
+    text: why || '手动拉黑',
+    status: '成功',
+  });
+}
+
+// 上一条是什么时候发的。用来拦住两条贴在一起发。
+async function lastTouchAt() {
+  const all = await getAll('touches');
+  let best = '';
+  for (const t of all) {
+    if (t.kind === '拉黑') continue;
+    const at = asText(t.created_at);
+    if (at > best) best = at;
+  }
+  return best;
+}
+
+// 离上一条过去了多少秒。没发过就是很大的数。
+async function secondsSinceLastTouch() {
+  const at = await lastTouchAt();
+  if (!at) return 1e9;
+  // 存的是东八区的字符串，拿同一套换算比，不碰设备时区
+  const now = nowCst();
+  return Math.round((Date.parse(now.replace(' ', 'T') + 'Z') -
+    Date.parse(at.replace(' ', 'T') + 'Z')) / 1000);
+}
+
+// 今天这类互动成功了多少次。用来卡每天的上限，别把号做没了。
+async function touchCountToday(kind) {
+  const all = await getAll('touches');
+  const day = todayCst();
+  return all.filter((t) => t.kind === kind && t.status === '成功' &&
+    asText(t.created_at).slice(0, 10) === day).length;
+}
+
+// 试过的人，不管成没成都不再试。
+//
+// 只跳过成功的话，失败的下一轮又排进来。同一个人被连着试好几次，
+// 而且有一种失败叫查不到发出去的消息，那种情况话可能已经发出去了
+// 只是没读到证据，再发一遍就是给人连发两条。
+async function triedIds(kind) {
+  const all = await touches(2000);
+  const out = new Set();
+  for (const t of all) {
+    if (t.kind === kind && t.user_id) out.add(t.user_id);
+  }
+  return out;
+}
+
+// 发过谁，他当初说了什么，我们回了什么。
+//
+// 流水表里只有我们发的话，对方原话在评论表里，按 user_id 关联。
+// 一个人可能在好几条帖子底下都留过言，取最近那条，
+// 因为话术就是照着最近那条生成的。
+async function sentList(limit, trade) {
+  const all = await touches(limit || 500);
+  const comments = await getAll('comments');
+  const byUser = {};
+  for (const c of comments) {
+    if (!c.user_id) continue;
+    const old = byUser[c.user_id];
+    if (!old || asText(c.comment_time) > asText(old.comment_time)) {
+      byUser[c.user_id] = c;
+    }
+  }
+  const out = [];
+  for (const t of all) {
+    if (t.kind !== '私信') continue;
+    const c = byUser[t.user_id] || {};
+    const tr = asTrade(c.trade || t.trade);
+    if (trade && tr !== trade) continue;
+    out.push({
+      nickname: asText(t.nickname),
+      user_id: asText(t.user_id),
+      text: asText(t.text),
+      status: asText(t.status),
+      detail: asText(t.detail),
+      at: asText(t.created_at),
+      said: asText(c.content),
+      site: asSite(c.site || t.site),
+      trade: tr,
+    });
+  }
+  return out;
+}
+
 
 // ===== 40-industry.js =====
 // 做哪个行业。
@@ -980,14 +1423,53 @@ const Trade = {
 
   async load() {
     Trade.now = industryOf(asText(await getSetting('industry', 'love')));
+    await Trade.loadTalks();
     return Trade.now;
   },
 
   async switchTo(key) {
     Trade.now = industryOf(key);
     await setSetting('industry', Trade.now.key);
+    // 话术是按行业各存各的，换过去要重读，不然还用着上一个行业那几条
+    await Trade.loadTalks();
     return Trade.now;
   },
+};
+
+// ---------- 评论话术 ----------
+//
+// 话术必须能自己改。同一句话在找对象行业说得通，换到医美就不知所云，
+// 而对接人手上有美容、情感、恋爱、交友好几摊生意。
+//
+// 每条记着勾没勾，发评论时只从勾上的里面随机挑。
+// 不想删又不想发的就取消勾选。
+
+function talksKey(industryKey) {
+  return 'talks_' + industryKey;
+}
+
+Trade.talks = [];
+
+Trade.pickedTalks = function () {
+  return Trade.talks.filter((t) => t.on).map((t) => t.text);
+};
+
+Trade.loadTalks = async function () {
+  const raw = await getSetting(talksKey(Trade.now.key), null);
+  if (Array.isArray(raw) && raw.length) {
+    Trade.talks = raw.map((e) => ({
+      text: asText(isMap(e) ? e.text : e),
+      on: isMap(e) ? e.on !== false : true,
+    }));
+  } else {
+    // 第一次进这个行业，把预置的几条铺进去，都默认勾上
+    Trade.talks = Trade.now.talks.map((t) => ({ text: t, on: true }));
+  }
+  return Trade.talks;
+};
+
+Trade.saveTalks = async function () {
+  await setSetting(talksKey(Trade.now.key), Trade.talks);
 };
 
 
@@ -1081,6 +1563,115 @@ const idleGiveUp = 4;
 // 按搜索那个次数放弃的话，每篇只能抓到最上面十几条，
 // 底下真正在应征的人全漏掉了。
 const commentGiveUp = 8;
+
+// ---------- 发送的节奏 ----------
+//
+// 采集只是看，发东西是留痕的。一天几十条加上一分钟连发，
+// 是被判成营销号最快的两条路，所以这几个数比一般人想的严得多。
+
+// 一批发几个人。
+const kBatchSizeDefault = 20;
+const kBatchSizeMin = 1;
+const kBatchSizeMax = 60;
+
+// 这一批用多少分钟发完。
+const kBatchMinutesDefault = 20;
+const kBatchMinutesMin = 5;
+const kBatchMinutesMax = 240;
+
+// 两条之间至少隔多少秒。
+//
+// 不是为了慢，是防止程序卡住或者页面秒开时瞬间连发好几条。
+// 真人再快也要看一眼再点。
+const kMinGapSeconds = 20;
+
+// 一天最多发几条评论。私信的上限按一批算，见 batchSize。
+const kCommentPerDay = 10;
+
+// 平均每条快到什么程度就该提醒一句。
+//
+// 比最小间隔宽一些。二十分钟发六十个平均二十秒，刚好压在最小间隔上，
+// 按最小间隔判的话它算合格，可那个速度已经不是人能做到的了。
+const kSaneGapSeconds = 30;
+
+Limits.batchSize = kBatchSizeDefault;
+Limits.batchMinutes = kBatchMinutesDefault;
+
+Limits.clampBatchSize = function (v) {
+  const n = asInt(v);
+  return n < kBatchSizeMin ? kBatchSizeMin : (n > kBatchSizeMax ? kBatchSizeMax : n);
+};
+
+Limits.clampBatchMinutes = function (v) {
+  const n = asInt(v);
+  return n < kBatchMinutesMin
+    ? kBatchMinutesMin
+    : (n > kBatchMinutesMax ? kBatchMinutesMax : n);
+};
+
+// 平均每条隔多少秒。用来告诉人这个组合快到什么程度。
+Limits.avgGapSeconds = function () {
+  return Limits.batchSize <= 1
+    ? 0
+    : Limits.batchMinutes * 60 / (Limits.batchSize - 1);
+};
+
+// 这个组合快不快过真人。
+//
+// 真快成这样也照发，只是把话说在前面。二十分钟发二十个是正常的，
+// 刷到一批合适的人集中发完就是这个节奏。
+Limits.tooFast = function () {
+  return Limits.batchSize > 1 && Limits.avgGapSeconds() < kSaneGapSeconds;
+};
+
+// 把这一批的时间随机切成若干段。
+//
+// 返回的是每条发送之前要等的秒数，第一条不等所以从第二条开始算，
+// 一共 n-1 段，加起来正好是设定的总时长。
+//
+// 切法是先给每段一个随机权重再按比例分，这样长短参差不齐。
+// 平均分再加个抖动的话，所有间隔都挤在平均值附近，
+// 那个规律性本身就是特征。
+Limits.plan = function (n, minutes) {
+  if (n <= 1) return [];
+  const total = (minutes === undefined ? Limits.batchMinutes : minutes) * 60;
+  const gaps = n - 1;
+
+  // 先垫上最小间隔，剩下的才拿去随机分
+  const floor = kMinGapSeconds * gaps;
+  const free = total - floor;
+  if (free <= 0) {
+    // 时间不够垫最小间隔，那就全按最小间隔来，宁可超时也不连发
+    return new Array(gaps).fill(kMinGapSeconds);
+  }
+
+  const w = [];
+  for (let i = 0; i < gaps; i++) w.push(Math.random() + 0.15);
+  const sum = w.reduce((a, b) => a + b, 0);
+  const out = [];
+  let used = 0;
+  for (let i = 0; i < gaps; i++) {
+    // 最后一段拿走剩下全部，免得取整之后总时长对不上
+    const extra = i === gaps - 1 ? free - used : Math.round(free * w[i] / sum);
+    used += extra;
+    out.push(kMinGapSeconds + extra);
+  }
+  return out;
+};
+
+Limits.loadBatch = async function () {
+  Limits.batchSize = Limits.clampBatchSize(
+    await getSetting('batch_size', kBatchSizeDefault));
+  Limits.batchMinutes = Limits.clampBatchMinutes(
+    await getSetting('batch_minutes', kBatchMinutesDefault));
+};
+
+Limits.saveBatch = async function (size, minutes) {
+  Limits.batchSize = Limits.clampBatchSize(size);
+  Limits.batchMinutes = Limits.clampBatchMinutes(minutes);
+  await setSetting('batch_size', Limits.batchSize);
+  await setSetting('batch_minutes', Limits.batchMinutes);
+};
 
 
 // ===== 50-funnel.js =====
@@ -1522,6 +2113,594 @@ function makeReply(theirText, seed, city) {
 }
 
 
+// ===== 56-poster.js =====
+// 在页面上真的动手：找输入框、把话填进去、点发送、核对发出去没有。
+//
+// 这一整套是从手机版 lib/local/poster.dart 搬过来的。那边这些代码本来就是
+// JavaScript，只是包在 Dart 字符串里发给 WebView 执行，搬到用户脚本里
+// 反而更直接：脚本本身就跑在页面上，不用再隔一层。
+//
+// 两个平台的输入框长得不一样，类名还经常变，所以不写死选择器，
+// 改成按特征找：可编辑的元素，占位文字里带说点什么或者评论。
+// 找不到就跳过这一条，绝不乱点别的按钮。
+
+// 发一条的结果。
+//
+// 分这么细是因为一天只有几条额度，报错必须能看出卡在哪一步。
+const POST_OK = 'ok';
+const POST_NO_BOX = 'nobox';
+const POST_NO_BTN = 'nobtn';
+const POST_NOT_SENT = 'notsent';
+const POST_UNKNOWN = 'unknown';
+const POST_NO_TARGET = 'notarget';
+const POST_FAILED = 'failed';
+
+const POST_LABEL = {
+  ok: '成功',
+  nobox: '没找到输入框',
+  nobtn: '没找到按钮',
+  notsent: '填进去了但没发出去',
+  unknown: '查不到发出去的消息',
+  notarget: '打不开那个人',
+  failed: '失败',
+};
+
+// 脚本返回的是 nobox:INPUT|搜索 这种带后缀的串，后缀是排障用的现场信息。
+// 按整串精确匹配的话全都落到出错上，真正的原因反而看不见了。
+function resultOf(s) {
+  const head = asText(s).split(':')[0].trim();
+  return POST_LABEL[head] ? head : POST_FAILED;
+}
+
+// ---------- 风控 ----------
+
+// 页面上有没有风控提示。
+//
+// 撞了风控还接着一条条发，是把限流打成封号的主要原因。
+// 见到就整轮停，不要只跳过当前这条。
+const kPostRiskWords = ['操作频繁', '操作太频繁', '发送频繁', '发送过于频繁',
+  '请稍后再试', '稍后再试', '请勿频繁', '当前操作频繁',
+  '安全验证', '滑动验证', '验证码', '人机验证', '验证中心',
+  '操作存在风险', '账号异常', '账号受限', '存在安全风险',
+  '无法发送', '不允许私信', '功能受限'];
+
+function postRiskWord() {
+  try {
+    const t = document.body ? document.body.innerText : '';
+    for (const w of kPostRiskWords) {
+      if (t.indexOf(w) >= 0) return w;
+    }
+    // 验证码是个全屏 iframe，它的文字不进 innerText，只能按结构认
+    if (document.querySelector('#captcha_container')) return '验证码遮罩';
+  } catch (e) {}
+  return '';
+}
+
+// ---------- 评论区 ----------
+
+// 切到评论那个标签页。
+//
+// 抖音作品页右边是两个并排的标签，相关推荐和评论，默认停在相关推荐上，
+// 这时候页面上一条评论都没有，直接搜昵称必然搜不到。
+// 标签上写的是 评论(720) 这种带条数的文字，按这个找最准。
+function openComments() {
+  // 判据是评论输入框在不在，不是页面上有没有那几个字。
+  //
+  // 全部评论和留下你的精彩评论吧这两句在没展开评论区的页面上也会出现，
+  // 拿它们当证据的结果是：一直以为评论区开着，实际上输入框压根没渲染。
+  if (document.querySelector('[data-e2e="comment-input"]') ||
+      document.querySelector(
+        '[data-e2e="comment-list"] [contenteditable]:not([contenteditable=false])')) {
+    return 'ok:已经开着';
+  }
+  if (document.querySelectorAll('[data-e2e="comment-item"]').length > 2) {
+    return 'ok:有评论';
+  }
+
+  // 有些版本要点一下才展开，兜底认这几种写法
+  const pat = [
+    /^评论\s*[（(]\s*[\d.万]+\s*[)）]$/,
+    /^评论\s*[\d.万]+$/,
+    /^评论$/,
+  ];
+  const all = [...document.querySelectorAll(
+    'div,span,button,a,[role=tab],[role=button],li')];
+  for (const re of pat) {
+    const tab = all
+      .filter((e) => re.test((e.textContent || '').trim()))
+      .filter((e) => {
+        const r = e.getBoundingClientRect();
+        // 标签本身很小，套着它的大块和看不见的都排掉
+        return r.width > 16 && r.width < 300 &&
+          r.height > 10 && r.height < 90 &&
+          r.top >= 0 && r.top < window.innerHeight;
+      })
+      .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0];
+    if (tab) {
+      tab.click();
+      return 'ok:' + (tab.textContent || '').trim().slice(0, 12);
+    }
+  }
+  return 'nobtn:没找到评论标签 元素' + all.length;
+}
+
+// ---------- 私信浮窗 ----------
+
+// 两边都从个人主页进，主页上都有常驻的私信按钮。点了右侧才挂出聊天浮窗。
+function openDm(nickname) {
+  const who = asText(nickname);
+  const panel = document.querySelector('[class*="componentsRightPanelwrapper"]');
+  if (panel) {
+    // 浮窗开着不等于开的是这个人。上一条发完浮窗会留着，
+    // 不核对就往里发，等于把这条话发进上一个人的对话框。
+    const title = panel.querySelector('[class*="RightPanelHeadertitle"]');
+    const name = title ? (title.textContent || '').trim() : '';
+    if (name && who && name.indexOf(who) >= 0) return 'ok:已经开着';
+    return 'wrong:' + name;
+  }
+
+  // 只在主体内容里找私信按钮。左侧导航栏里也有私信两个字，
+  // 而且排在文档前面，取第一个会点进消息中心，
+  // 那里默认选中最近一次会话，话就发给上一个人了。
+  const main = document.querySelector(
+    'main,[class*="userDetail"],[class*="userInfo"]') || document.body;
+
+  // 按位置认，不按顺序取第一个。
+  //
+  // 主页上那个私信一定跟关注按钮并排，所以先定位关注按钮，
+  // 再要求私信跟它在同一行、在它右边。找不到关注按钮就退回原来那套。
+  const named = [...main.querySelectorAll('button,[role=button],span,div')]
+    .filter((e) => {
+      const t = (e.textContent || '').trim();
+      // 抖音写私信，小红书写发私信
+      return t === '私信' || t === '发私信';
+    })
+    .filter((e) => !e.closest('nav,aside,header,[class*="navigation"],' +
+      '[class*="sidebar"],[class*="header"],[class*="topbar"],[class*="nav-"]'))
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 20 && r.height > 12;
+    });
+
+  const follow = [...main.querySelectorAll('button,[role=button],div,span')]
+    .filter((e) => /^(关注|已关注|互相关注)$/.test((e.textContent || '').trim()))
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width >= 44 && r.height >= 26 && r.height <= 70;
+    })
+    .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0];
+
+  let btn = null;
+  if (follow && named.length) {
+    const fr = follow.getBoundingClientRect();
+    const mid = fr.top + fr.height / 2;
+    btn = named.filter((e) => {
+      const r = e.getBoundingClientRect();
+      return Math.abs((r.top + r.height / 2) - mid) < 40;
+    })[0];
+  }
+  if (!btn) btn = named[0];
+  if (!btn) {
+    // 小红书主页上私信是个没有文字的圆形气泡图标，按文字找不到，
+    // 但它自己带类名 xhs-user-im-btn，直接按类名认就行。
+    const im = document.querySelector(
+      '.xhs-user-im-btn,[class*="xhs-user-im"],[class*="user-im-btn"]');
+    if (im) {
+      im.scrollIntoView({ block: 'center' });
+      im.click();
+      return 'ok:小红书气泡';
+    }
+    const body = document.body ? document.body.innerText : '';
+    return 'nobtn:没有私信键 ' + body.slice(0, 30).replace(/\s+/g, ' ');
+  }
+  btn.scrollIntoView({ block: 'center' });
+  btn.click();
+  return 'ok';
+}
+
+// 小红书那个私信键在哪。
+//
+// 它只认真实手势，脚本点不动，所以要把它挪到屏幕中间，
+// 让人一眼看见、伸手就能按。手机版是让程序对着屏幕真按一下，
+// 浏览器里没有这个本事，只能请人代劳。
+function highlightDmButton() {
+  const b = document.querySelector(
+    '.xhs-user-im-btn,[class*="xhs-user-im"],[class*="user-im-btn"]');
+  if (!b) return false;
+  const r = b.getBoundingClientRect();
+  if (r.width < 4 || r.height < 4) return false;
+  b.scrollIntoView({ block: 'center' });
+  try {
+    b.style.outline = '3px solid #ff2e4d';
+    b.style.outlineOffset = '3px';
+    b.style.borderRadius = '50%';
+  } catch (e) {}
+  return true;
+}
+
+// 聊天框挂上来了没有。
+function chatBoxReady() {
+  return document.querySelectorAll(
+    '[contenteditable]:not([contenteditable=false]),textarea').length > 0;
+}
+
+// 开出来的是消息中心还是单人对话框。
+//
+// 点错入口会把整个消息中心拉开，里面是一长串会话列表。那种情况下
+// 页面上确实有输入框，往里填字就发给了列表里默认选中的那个人，
+// 也就是最近聊过的人，跟这一轮要发的人毫无关系。
+function looksLikeInbox() {
+  const items = document.querySelectorAll(
+    '[class*="conversationConversationItem"],[class*="ConversationItem"],' +
+    '[class*="sessionItem"],[class*="chatListItem"]');
+  return items.length >= 3 ? 'inbox:' + items.length : '';
+}
+
+// 发之前核对聊天窗口对面是不是目标那个人。
+//
+// 没有这一步的话，浮窗留存、点错入口、地址失效跳到别的页面，
+// 任何一种都会把话发给错的人，而且日志全绿，事后查不出来。
+function verifyPeer(nickname) {
+  const who = asText(nickname);
+  if (!who) return 'noname';
+  // 先确认聊天窗口真的开着。窗口都没开就去比标题，比中的是页面上别的东西。
+  const box = document.querySelector(
+    '[class*="componentsRightPanelwrapper"],[class*="imChat"],[class*="im-chat"],' +
+    '[class*="chatBox"],[class*="ChatContainer"]');
+  if (!box) return 'notitle';
+
+  const sel = '[class*="RightPanelHeadertitle"],' +
+    '[class*="conversationConversationItemtitle"],' +
+    '[class*="chat-header"],[class*="ChatHeader"],[class*="im-header"]';
+  const nodes = [...box.querySelectorAll(sel)]
+    .map((t) => (t.textContent || '').trim())
+    .filter((t) => t.length > 0 && t.length < 40);
+  if (!nodes.length) return 'notitle';
+  for (const t of nodes) {
+    // 标题里带昵称就算对上。反过来只在标题被截断时才认，
+    // 否则标题两个字就能匹配上任何以它开头的昵称。
+    if (t.indexOf(who) >= 0) return 'ok';
+    if (t.length >= 2 && who.indexOf(t) === 0 && t.length >= who.length - 2) {
+      return 'ok';
+    }
+  }
+  return 'wrong:' + nodes.slice(0, 2).join('|');
+}
+
+// ---------- 输入框 ----------
+
+// 找输入框并把话填进去。填字发送和只填字共用它。
+//
+// 两条路必须落在同一个输入框上。各写一份迟早会分叉，
+// 到那时一条路发得出去另一条填不进去，还查不出差在哪。
+//
+// 填不进去返回一个 nobox 开头的串，填进去了返回那个元素。
+function fillBox(want) {
+  // 回复框的占位文字是 回复 @某某 这种，带上 @ 和昵称才认得全
+  const hint = /说点什么|评论|留下|说两句|友善|发消息|发送消息|回复|@|善语结善缘/;
+
+  // 私信的输入框先按各家的专属写法找。这些是从开源项目里扒的，
+  // 比按占位文字猜准得多。找不到再走下面那套通用的。
+  const named = document.querySelector(
+    '.xhs-im-input-bar-editor[contenteditable="true"],' +
+    '.messageEditorimChatEditorContainer [contenteditable="true"],' +
+    '[class*="componentsRightPanelwrapper"] [contenteditable="true"]');
+
+  // 找评论框。先找可编辑的 div，再找 textarea 和 input。
+  //
+  // 选择器不能写死 contenteditable=true：抖音的编辑器常写成
+  // plaintext-only，也有光秃写个 contenteditable 的，还有不写 type 的
+  // input，这三种精确匹配全都漏掉，表现就是找不到输入框。
+  const box = named || (() => {
+    const all = [...document.querySelectorAll(
+      '[contenteditable]:not([contenteditable=false]),textarea,' +
+      'input:not([type=hidden]):not([type=checkbox]):not([type=radio])')];
+    const words = (e) =>
+      (e.getAttribute('placeholder') || e.getAttribute('data-placeholder') ||
+        e.getAttribute('aria-label') || '') + (e.textContent || '');
+    const big = all.filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width >= 60 && r.height >= 12;
+    });
+
+    // 回复框优先。帖主底下那个公共评论框写着留下你的精彩评论吧，
+    // 在 DOM 里还排在前面，按顺序取第一个必然取到它，
+    // 那样回复就变成了在人家评论区公开留言，最招举报。
+    const reply = big.filter((e) => /回复|@/.test(words(e)));
+    if (reply.length) return reply[0];
+    const other = big.filter((e) => hint.test(words(e)));
+    if (other.length) return other[0];
+    // 占位文字没匹配上时，退而求其次：页面最下面那个可编辑元素
+    const edits = all.filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 120 && r.height > 12 && r.top > window.innerHeight * 0.4;
+    });
+    return edits.length ? edits[edits.length - 1] : null;
+  })();
+
+  if (!box) {
+    // 把页面上所有可编辑元素的占位文字报回来，好知道输入框长什么样
+    const seen = [...document.querySelectorAll(
+      '[contenteditable]:not([contenteditable=false]),textarea,input')]
+      .map((e) => String(e.getAttribute('placeholder') ||
+        e.getAttribute('data-placeholder') ||
+        e.getAttribute('aria-label') || e.tagName).slice(0, 14));
+    return 'nobox:' + [...new Set(seen)].slice(0, 6).join('|') +
+      ' 可编辑' + document.querySelectorAll(
+        '[contenteditable]:not([contenteditable=false])').length +
+      ' 浮窗' + document.querySelectorAll(
+        '[class*="componentsRightPanelwrapper"]').length;
+  }
+
+  box.scrollIntoView({ block: 'center' });
+  box.focus();
+  box.click();
+
+  // 填字。可编辑 div 和输入框的写法不一样，两种都要走一遍事件，
+  // 不然前端框架不认这次输入，发送键一直是灰的。
+  if (box.isContentEditable) {
+    // 先试 execCommand。抖音的评论框是 Slate 编辑器，小红书是 Vue，
+    // 这类富文本自己维护一套内部状态，直接改 textContent 它不认，
+    // 发送键会一直是灰的。execCommand 会走原生的 beforeinput 和 input，
+    // 效果跟真人打字一样。
+    let ok = false;
+    try {
+      ok = document.execCommand('insertText', false, want);
+    } catch (e) {}
+    if (!ok || (box.textContent || '').indexOf(want.slice(0, 4)) < 0) {
+      box.textContent = want;
+      box.dispatchEvent(new InputEvent('input',
+        { bubbles: true, inputType: 'insertText', data: want }));
+    }
+  } else {
+    const proto = box.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const set = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    set.call(box, want);
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  return box;
+}
+
+// 把话填进输入框并点发送。
+function fillAndSend(text) {
+  const want = asText(text);
+  const box = fillBox(want);
+  if (typeof box === 'string') return box;
+
+  // 抖音给发送键挂了 data-e2e，优先用
+  const marked = document.querySelector('[data-e2e="comment-publish"]');
+  if (marked) {
+    marked.click();
+    return 'ok';
+  }
+
+  // 只认写着发送发布评论的按钮，且要在评论框附近，免得点到页面上别的地方去
+  const near = box.closest('form,section,div[class*=comment],div[class*=input]') ||
+    document.body;
+  const btn = [...near.querySelectorAll('button,[role=button],span,div')]
+    .filter((e) => /^(发送|发布|评论|发表)$/.test((e.textContent || '').trim()))[0];
+  if (btn) {
+    btn.click();
+    return 'ok';
+  }
+
+  // 没有发送键就按回车。抖音的评论框和私信框都没有独立的发送按钮，
+  // 回车即发，这是唯一的发送方式。
+  //
+  // 回车要打给重新查出来的那个元素：Slate 编辑器在首次输入之后会把
+  // 原来的节点换掉，拿着旧引用发按键，事件落在一个已经脱离文档的
+  // 节点上，什么都不会发生。
+  const live = document.querySelector(
+    '.xhs-im-input-bar-editor[contenteditable="true"],' +
+    '.messageEditorimChatEditorContainer [contenteditable="true"],' +
+    '[class*="componentsRightPanelwrapper"] [contenteditable="true"]') || box;
+  live.focus();
+  for (const type of ['keydown', 'keypress', 'keyup']) {
+    live.dispatchEvent(new KeyboardEvent(type, {
+      bubbles: true, cancelable: true,
+      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    }));
+  }
+  return 'ok';
+}
+
+// 只把话填进输入框，不点发送。
+//
+// 最后那一下留给人自己按，所以连回车都不能派。私信框回车即发，
+// 派一个就等于替人做了决定，这条路的意义正是不替人做这个决定。
+function fillOnly(text) {
+  const box = fillBox(asText(text));
+  return typeof box === 'string' ? box : 'ok';
+}
+
+// ---------- 核对 ----------
+
+// 发完之后看看到底发出去没有。
+//
+// 要正着找证据：会话里最后那条自己发的气泡，文字对得上才算数。
+// 反着看输入框空不空全是坑：安全验证会把整个聊天浮窗从 DOM 里摘走，
+// 一个可编辑元素都遍历不到；前端按回车先清框再发请求，请求被频控挡掉
+// 框也一样是空的；富文本发完还会换掉节点，新节点本来就是空的。
+// 三种情况都会报成功，而一天只有几条额度。
+function checkSent(text) {
+  const want = asText(text);
+  // 前后空白在气泡里会被重排，比对前一律去掉
+  const norm = (s) => (s || '').replace(/\s+/g, '');
+  const key = norm(want).slice(0, 12);
+  if (!key) return 'unknown:没有话可比对';
+
+  // 输入框清空只当辅助信号，单独不作数，只跟在结论后面帮着排障。
+  let cleared = true;
+  for (const b of document.querySelectorAll(
+      '[contenteditable]:not([contenteditable=false]),textarea,input')) {
+    const t = (b.isContentEditable ? b.textContent : b.value) || '';
+    if (norm(t).indexOf(key) >= 0) cleared = false;
+  }
+
+  // 找自己发出去的那条气泡。这些类名是从开源项目扒来的，平台一改版就失效，
+  // 所以排成一串候选逐个试，前面的选不出来就往后退。
+  const sels = [
+    '.xhs-im-bubble__text',
+    '[class*="MessageItem"][class*="isFromMe"] [class*="pureText"]',
+    '[class*="MessageItem"][class*="isFromMe"] [class*="bubbleTextContent"]',
+    '[class*="isFromMe"] [class*="pureText"]',
+    '[class*="isFromMe"] [class*="bubbleTextContent"]',
+    '[class*="MessageItem"][class*="isFromMe"]',
+    '[class*="isFromMe"]',
+  ];
+  let mine = [];
+  for (const s of sels) {
+    const got = [...document.querySelectorAll(s)];
+    if (got.length) {
+      mine = got;
+      break;
+    }
+  }
+
+  if (mine.length) {
+    const texts = mine.map((e) => norm(e.innerText || e.textContent || ''));
+    // 只看末尾几条。整段会话里可能有以前发过的同一句话，
+    // 全表搜等于把上一次的成绩算到这一次头上。
+    for (let i = texts.length - 1; i >= 0 && i > texts.length - 4; i--) {
+      if (texts[i].indexOf(key) >= 0) return 'ok:气泡';
+    }
+    return 'notsent:气泡' + texts.length + '条都不是这句 清空' + (cleared ? '是' : '否');
+  }
+
+  // 评论区没有气泡这一说。退一步找：这句话出现在某个不能编辑的元素里，
+  // 说明它已经进了列表，不是还留在输入框里没发出去。
+  const posted = [...document.querySelectorAll('span,div,p')]
+    .filter((e) => e.children.length === 0)
+    .filter((e) => norm(e.textContent || '').indexOf(key) >= 0)
+    .filter((e) => !e.closest('[contenteditable]:not([contenteditable=false]),textarea'));
+  if (posted.length) return 'ok:列表';
+
+  // 找不到就明说找不到。含糊报成功是最贵的一种错。
+  return 'unknown:没找到发出去的那条 清空' + (cleared ? '是' : '否');
+}
+
+// ---------- 回复某条评论 ----------
+
+// 在评论区找到这个人那条评论，点它的回复。
+//
+// 只回复评论区的人，不去帖主底下留言。帖主的评论区是公开的门面，
+// 陌生人往那儿贴广告最招人烦，也最容易被举报。回复某条评论要软得多，
+// 而且评论区的人本来就是主动来搭话的，转化也高。
+//
+// 昵称为空直接放弃，绝不退回去评论帖主。
+function clickReply(nickname) {
+  const who = asText(nickname);
+  if (!who) return 'nofound';
+
+  // 先找到写着这个昵称的那一块，再从这块里找回复。
+  //
+  // 抖音给评论项挂了 data-e2e 属性，比 class 名稳，改版也不容易变，
+  // 有它就直接用，省掉下面那套从小往外扩的猜法。
+  const marked = [...document.querySelectorAll('[data-e2e="comment-item"]')]
+    .filter((e) => (e.innerText || '').indexOf(who) >= 0)[0];
+  if (marked) {
+    marked.scrollIntoView({ block: 'center' });
+    const b = [...marked.querySelectorAll('button,[role=button],span,div,a,p')]
+      .filter((e) => /^(回复|回覆)$/.test((e.textContent || '').trim()))[0];
+    if (b) {
+      b.click();
+      return 'ok:标记项';
+    }
+  }
+
+  // 取最小的那块会只圈住昵称本身，回复按钮在外面；取最大的又会圈住
+  // 整个评论区。所以从最小的往外走，直到这块里既有昵称又有别的内容，
+  // 那才是一整条评论。
+  const nodes = [...document.querySelectorAll('div,section,li,article')]
+    .filter((e) => (e.innerText || '').indexOf(who) >= 0)
+    .filter((e) => (e.innerText || '').length < 600)
+    .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+  if (!nodes.length) return 'nofound';
+
+  let item = nodes[0];
+  // 往外走几层，找到装得下整条评论的那一块
+  for (let i = 0; i < 6; i++) {
+    const t = (item.innerText || '').trim();
+    if (t.length > who.length + 6 && item.querySelectorAll('*').length > 3) break;
+    if (!item.parentElement) break;
+    item = item.parentElement;
+  }
+  item.scrollIntoView({ block: 'center' });
+
+  // 网页版的回复按钮是鼠标悬停才冒出来的，手机上没有悬停这回事，
+  // 所以先手动派一串鼠标事件过去，把它逼出来。
+  for (const type of ['mouseover', 'mouseenter', 'mousemove']) {
+    item.dispatchEvent(new MouseEvent(type, { bubbles: true, view: window }));
+  }
+
+  // 不按尺寸筛。
+  //
+  // 桌面版把回复按钮做成鼠标悬停才显形，量出来是 0x0，按尺寸筛
+  // 等于亲手把唯一能用的那个扔了。click 根本不看元素可不可见，
+  // 藏起来的照样点得动。
+  const find = (scope) =>
+    [...scope.querySelectorAll('button,[role=button],span,div,a,p')]
+      .filter((e) => /^(回复|回覆)$/.test((e.textContent || '').trim()))[0];
+
+  let btn = find(item);
+  if (!btn) {
+    // 悬停事件有时候要一帧才生效，同步再找一次
+    item.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, view: window }));
+    btn = find(item);
+  }
+  if (!btn) {
+    // 派发的事件触发不了 CSS 的 hover，那是靠真实指针位置驱动的。
+    // 所以直接把它强制显示出来，连同上面几层一起刷，
+    // 因为藏起来的往往是外层那个容器。
+    const hidden = [...item.querySelectorAll('*')]
+      .filter((e) => /^(回复|回覆)$/.test((e.textContent || '').trim()));
+    for (const h of hidden) {
+      let n = h;
+      for (let i = 0; i < 4 && n && n !== item; i++) {
+        n.style.setProperty('display', 'inline-block', 'important');
+        n.style.setProperty('visibility', 'visible', 'important');
+        n.style.setProperty('opacity', '1', 'important');
+        n.style.setProperty('pointer-events', 'auto', 'important');
+        n = n.parentElement;
+      }
+    }
+    btn = find(item);
+  }
+  if (!btn) {
+    // 往上退一层再找。只退一层：退两层就到整个评论列表了，
+    // 那时候取到的是别人那条评论的回复按钮，话会回给错的人。
+    const up = item.parentElement;
+    if (up && (up.innerText || '').indexOf(who) >= 0 &&
+        (up.innerText || '').length < 800) {
+      for (const type of ['mouseover', 'mouseenter', 'mousemove']) {
+        up.dispatchEvent(new MouseEvent(type, { bubbles: true, view: window }));
+      }
+      btn = find(up);
+    }
+  }
+  if (!btn) {
+    // 还是没有，把这一块和它父级的短文字全报回来，好知道按钮到底叫什么
+    const scope = item.parentElement || item;
+    const words = [...scope.querySelectorAll('span,div,button,a')]
+      .map((e) => (e.textContent || '').trim())
+      .filter((t) => t.length > 0 && t.length < 8);
+    return 'nobtn:' + [...new Set(words)].slice(0, 12).join('|');
+  }
+
+  // 直接点，不派那一串事件。
+  //
+  // 逐层派 touch、pointer、mouse、click 会一次发出去三十多个事件，
+  // 其中好几个 click 逐层冒泡到根监听器。React 那种在根节点收事件的
+  // 框架会看到多次独立点击，开关式的处理器就变成开关开关，净结果是没开。
+  btn.scrollIntoView({ block: 'center' });
+  btn.click();
+  return 'ok';
+}
+
+
 // ===== 58-csv.js =====
 // 导出成 CSV，拿到电脑上用表格软件打开。
 //
@@ -1607,7 +2786,9 @@ const Buckets = {
   _seen: new Set(),
 
   add(url, body) {
-    const name = bucketOf(url);
+    // 两个平台的路径没有交集，所以两张表都试一遍就行，
+    // 不用先知道当前在采哪个平台。
+    const name = bucketOf(url) || douyinBucketOf(url);
     if (!name || !body) return;
     const sig = name + '|' + url.length + '|' + body.length;
     if (this._seen.has(sig)) return;
@@ -1961,9 +3142,9 @@ function wantUrl(job) {
   if (job.phase === 'note') {
     const h = currentHit(job);
     if (!h) return '';
-    return buildNoteUrl(h.note_id, h.xsec_token, 'pc_search');
+    return noteUrlHere(h.note_id, h.xsec_token);
   }
-  return searchUrl(currentWord(job));
+  return searchUrlHere(currentWord(job));
 }
 
 // 现在这个页面是不是该干活的那个。
@@ -1971,7 +3152,19 @@ function onWantedPage(job) {
   const path = location.pathname;
   if (job.phase === 'note') {
     const h = currentHit(job);
-    return !!h && path.indexOf('/explore/' + h.note_id) === 0;
+    if (!h) return false;
+    // 小红书是 /explore/id，抖音是 /video/id
+    return path.indexOf('/explore/' + h.note_id) === 0 ||
+      path.indexOf('/video/' + h.note_id) === 0;
+  }
+  if (onDouyin()) {
+    // 抖音把关键词放在路径里，不是查询串里
+    if (path.indexOf('/search/') !== 0) return false;
+    let word = '';
+    try {
+      word = decodeURIComponent(path.slice('/search/'.length));
+    } catch (e) {}
+    return word === currentWord(job);
   }
   if (path.indexOf('/search_result') !== 0) return false;
   let kw = '';
@@ -2050,7 +3243,7 @@ async function readAWhile() {
 function drainNotes(bucket, seen, out, word) {
   let added = 0;
   for (const pack of Buckets.take(bucket)) {
-    const got = parseCaptured(pack.url, pack.body, word);
+    const got = parseHere(pack.url, pack.body, word);
     for (const n of got.notes) {
       if (!n.note_id || seen.has(n.note_id)) continue;
       seen.add(n.note_id);
@@ -2064,7 +3257,7 @@ function drainNotes(bucket, seen, out, word) {
 function drainComments(bucket, seen, out) {
   let added = 0;
   for (const pack of Buckets.take(bucket)) {
-    const got = parseCaptured(pack.url, pack.body, '');
+    const got = parseHere(pack.url, pack.body, '');
     const nid = noteIdInUrl(pack.url);
     for (const c of got.comments) {
       if (!c.comment_id || seen.has(c.comment_id)) continue;
@@ -2122,8 +3315,9 @@ async function stepSearch(job) {
   drainNotes('search', seen, rows, word);
 
   const hits = rows.slice(0, job.maxNotes)
-    // 小红书没有 token 打不开笔记，这种直接不要，免得白跑一趟
-    .filter((n) => n.note_id && n.xsec_token);
+    // 小红书没有 token 打不开笔记，这种直接不要，免得白跑一趟。
+    // 抖音压根不用 token，一律要求有 token 的话，抖音会一篇都采不到。
+    .filter((n) => n.note_id && (onDouyin() || n.xsec_token));
 
   const stats = Object.assign({}, job.stats);
   stats.total = estimateTotal(
@@ -2189,14 +3383,16 @@ async function stepNote(job) {
   const note = Object.assign({}, hit, detail[0]);
   note.keyword = word;
   note.xsec_token = note.xsec_token || hit.xsec_token;
-  note.note_url = note.note_url || buildNoteUrl(note.note_id, note.xsec_token, 'pc_search');
+  note.note_url = note.note_url || noteUrlHere(note.note_id, note.xsec_token);
 
   for (const c of comments) {
     if (!c.note_id) c.note_id = hit.note_id;
   }
 
-  const freshNotes = await saveNotes([note], word, '小红书', job.trade);
-  const freshComments = await saveComments(comments, '小红书', job.trade);
+  // 平台在这里定死，不留给后面去猜。以前是看 xsec_token 空不空反推，
+  // 重采一次把 token 覆盖没了，人就被判到另一个平台去了。
+  const freshNotes = await saveNotes([note], word, siteNow(), job.trade);
+  const freshComments = await saveComments(comments, siteNow(), job.trade);
   await nextNote(freshNotes, freshComments, head(note.title || note.content, 18));
 }
 
@@ -2327,7 +3523,8 @@ async function startCollect(opt) {
     log: [],
   });
   for (const w of words) await saveKeyword(w, opt.trade || Trade.now.key, true);
-  await drive();
+  // 起头就返回，理由同发送那边：这一轮要跑几十分钟，等在这儿没有意义
+  drive();
 }
 
 async function pauseCollect() {
@@ -2412,98 +3609,666 @@ function startHeartbeat() {
 }
 
 
+// ===== 74-sender.js =====
+// 发私信和发评论。
+//
+// 跟采集一样是一台状态机：每发一条就跳一次页面，脚本被重新加载，
+// 所以进度只能存在库里，新页面起来读回去接着发。
+//
+// 跟手机版的区别只有一处，但很关键：小红书个人主页上那个私信键
+// 只认真实手势，浏览器里派多少事件它都不理。手机版是让程序对着屏幕
+// 真按一下绕过去的，用户脚本没有这个本事，所以到那一步会停下来，
+// 把按键标红请人按一下，按完程序接着把话填进去发出去。
+// 抖音那个私信键脚本点得动，全程不用人管。
+
+const SEND_KEY = 'send';
+
+const Sender = {
+  job: null,
+  stopFlag: false,
+  pauseFlag: false,
+  busy: false,
+  onChange: null,
+};
+
+function emitSend() {
+  if (Sender.onChange) {
+    try { Sender.onChange(Sender.job); } catch (e) {}
+  }
+}
+
+async function getSendJob() {
+  return await getOne('job', SEND_KEY);
+}
+
+async function saveSendJob(patch) {
+  const job = Object.assign({}, Sender.job || {}, patch || {});
+  job.id = SEND_KEY;
+  job.tab = TAB_ID;
+  job.beat = Date.now();
+  Sender.job = job;
+  await putOne('job', job);
+  emitSend();
+  return job;
+}
+
+async function saySend(line, extra) {
+  const job = Sender.job || {};
+  await saveSendJob(Object.assign(
+    { message: line, log: logLine(job, line) }, extra || {}));
+}
+
+// ---------- 挑人 ----------
+
+// 挑出该发的人。
+//
+// 三道关：拉黑过的直接剔掉，广告号水军灌水的过不了漏斗，试过的人不再试。
+// 同一个人发两遍最招人烦，也最容易被举报。
+async function pickTargets(all, kind) {
+  const blocked = await blockedIds();
+  // 判的是对方原话。拿要发出去的话术去判，等于问我们自己有没有意向。
+  const r = runFunnel(all, { blocked: blocked });
+  const done = await triedIds(kind);
+  const left = kind === '私信' ? Limits.batchSize : kCommentPerDay;
+
+  const out = [];
+  let skipped = 0;
+  // 开不了主页的和没帖子的分开数。混在一起报的话，界面上只会说
+  // 一个都发不了，看不出到底是被漏斗筛掉了还是地址有问题。
+  let noWay = 0;
+  for (const t of r.keep) {
+    if (out.length >= left) break;
+    // 私信只要有人就行，评论还得有帖子
+    if (kind === '评论' && !t.note_id) {
+      noWay += 1;
+      continue;
+    }
+    // 地址开不了的人直接跳过，不拿一个会被重定向的地址去发
+    if (kind === '私信' && !canOpenProfile(t.user_id)) {
+      noWay += 1;
+      continue;
+    }
+    if (!asText(t.text).trim()) {
+      noWay += 1;
+      continue;
+    }
+    if (t.user_id && done.has(t.user_id)) {
+      skipped += 1;
+      continue;
+    }
+    if (t.user_id) done.add(t.user_id);
+    out.push(t);
+  }
+  return { list: out, stat: r.stat, skipped: skipped, noWay: noWay };
+}
+
+// 一个都挑不出来时要说清楚为什么。
+//
+// 一声不吭跑完的话，界面上进度条一收，看着就像按钮点了没反应。
+function whyNone(picked, total) {
+  const stat = picked.stat;
+  const why = [];
+  if (stat.blocked > 0) why.push('拉黑过 ' + stat.blocked + ' 个');
+  if (stat.risky > 0) why.push('广告号 ' + stat.risky + ' 个');
+  if (stat.low > 0) why.push('看不出有意向 ' + stat.low + ' 个');
+  if (picked.skipped > 0) why.push('试过 ' + picked.skipped + ' 个');
+  if (picked.noWay > 0) why.push('打不开 ' + picked.noWay + ' 个');
+  return why.length
+    ? '这 ' + total + ' 个人都没发：' + why.join('，')
+    : '这批人一个都发不了';
+}
+
+// ---------- 开跑 ----------
+
+// kind 是私信或者评论。评论一律只填字，最后那一下由人自己按。
+async function startSend(people, kind) {
+  if (Runtime.job && Runtime.job.running) {
+    return { ok: false, why: '采集还在跑，先停下来再发' };
+  }
+  // 话没准备好就现生成一条。
+  //
+  // 界面上那几个入口都会先把话备好，但这个函数也是排障时直接调的口子，
+  // 少了这一步会静静地一个人都挑不出来，谁也看不出是因为没有话可发。
+  const all = (people || []).map((p) => Object.assign({}, p, {
+    text: asText(p.text).trim() || makeReply(p.said, p.user_id, p.ip_location),
+  }));
+  const picked = await pickTargets(all, kind);
+  if (!picked.list.length) {
+    return { ok: false, why: whyNone(picked, all.length) };
+  }
+  Sender.stopFlag = false;
+  Sender.pauseFlag = false;
+
+  const targets = picked.list.map((p) => ({
+    note_id: p.note_id,
+    xsec_token: p.xsec_token,
+    user_id: p.user_id,
+    nickname: p.nickname,
+    said: p.said,
+    text: p.text,
+    site: p.site,
+  }));
+
+  await saveSendJob({
+    running: true,
+    paused: false,
+    kind: kind,
+    // 公开评论一律真人按最后那一下。评论是贴在别人门面上的，最招举报。
+    byHand: kind === '评论',
+    targets: targets,
+    i: 0,
+    // 开跑之前把这一批的时间切好。发几个人是定的，总时长也是定的，
+    // 中间怎么分由这里一次算完，长短参差不齐，加起来正好是设定的总时长。
+    gaps: kind === '私信' ? Limits.plan(targets.length) : [],
+    stats: { ok: 0, fail: 0, done: 0 },
+    trade: Trade.now.key,
+    nextAt: 0,
+    waiting: '',
+    message: '准备开始',
+    log: [],
+  });
+  // 起头就返回，不等这一批跑完。
+  //
+  // 这一批可能要发二十分钟，中间还会跳页面、停下来等人按键。
+  // 调用方等在这儿的话，界面上那个按钮会一直转，
+  // 真正的进度反而要靠状态回调才看得到。
+  driveSend();
+  return { ok: true, n: targets.length };
+}
+
+async function pauseSend() {
+  Sender.pauseFlag = true;
+  await saveSendJob({ paused: true, message: '暂停了，点继续接着发' });
+}
+
+async function resumeSend() {
+  Sender.pauseFlag = false;
+  await saveSendJob({ paused: false, message: '接着发' });
+  if (!Sender.busy) await driveSend();
+}
+
+async function stopSend() {
+  Sender.stopFlag = true;
+  Sender.pauseFlag = false;
+  await saveSendJob({ paused: false, message: '收到停止，等这一条走完' });
+  if (!Sender.busy) await finishSend('已停止');
+}
+
+async function finishSend(status) {
+  Sender.stopFlag = false;
+  Sender.pauseFlag = false;
+  const job = Sender.job || {};
+  const s = job.stats || { ok: 0, fail: 0 };
+  const line = status + '，成功 ' + s.ok + ' 失败 ' + s.fail;
+  await saveSendJob({
+    running: false,
+    paused: false,
+    waiting: '',
+    targets: [],
+    message: line,
+    log: logLine(job, line),
+  });
+}
+
+// 人已经在页面上按过发送了，接着下一个。
+async function humanDone() {
+  if (!Sender.job || !Sender.job.waiting) return;
+  await saveSendJob({ waiting: '' });
+}
+
+// ---------- 等待 ----------
+
+function sendStopped() {
+  return Sender.stopFlag;
+}
+
+async function sendNap(ms, note) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (sendStopped()) return;
+    while (Sender.pauseFlag && !Sender.stopFlag) await sleep(400);
+    if (sendStopped()) return;
+    const left = Math.ceil((until - Date.now()) / 1000);
+    if (note && left > 0) {
+      Sender.job = Object.assign({}, Sender.job, { message: note + ' ' + left + ' 秒' });
+      emitSend();
+    }
+    await sleep(Math.min(500, Math.max(50, until - Date.now())));
+  }
+}
+
+// 等人在页面上动手。等不到就一直等，人不动这条就不算发过。
+async function waitHuman(what, ready) {
+  await saveSendJob({ waiting: what });
+  for (let i = 0; i < 1200 && !sendStopped(); i++) {
+    if (ready && ready()) break;
+    if (!Sender.job || !Sender.job.waiting) break;
+    await sleep(500);
+  }
+  const got = ready ? ready() : true;
+  await saveSendJob({ waiting: '' });
+  return got;
+}
+
+// ---------- 一条 ----------
+
+function sendTarget(job) {
+  return (job.targets || [])[job.i] || null;
+}
+
+function sendWantUrl(job) {
+  const t = sendTarget(job);
+  if (!t) return '';
+  return job.kind === '私信'
+    ? userUrlHere(t.user_id)
+    : noteUrlHere(t.note_id, t.xsec_token);
+}
+
+function onSendPage(job) {
+  const t = sendTarget(job);
+  if (!t) return false;
+  const want = job.kind === '私信' ? t.user_id : t.note_id;
+  return !!want && location.href.indexOf(want) >= 0;
+}
+
+// 等页面真的把内容渲染出来再动手。
+//
+// 只按秒数等的话，网慢一点就在半成品页面上乱找，白跑一轮。
+// 门槛按页面类型分：个人主页就一个昵称几个数字，简介还常常是空的，
+// 按三百字等永远等不到。
+async function waitPageReady(want, isDm) {
+  for (let i = 0; i < 12 && !sendStopped(); i++) {
+    await sendNap(2000);
+    // 地址对不对优先判。地址失效会跳首页或者登录页，
+    // 那些页面文字反而更多，只看字数会以为加载好了。
+    if (want && location.href.indexOf(want) < 0) {
+      return 'wrong:' + location.href.slice(0, 60);
+    }
+    const t = document.body ? document.body.innerText : '';
+    if (t.length > (isDm ? 60 : 300)) return 'ok';
+  }
+  return 'slow';
+}
+
+// 发一条私信。
+async function sendOneDm(t) {
+  const trace = [];
+  const note = (s) => trace.push(s);
+
+  const ready = await waitPageReady(t.user_id, true);
+  if (ready.indexOf('wrong') === 0) {
+    note('跑到别的页面了 ' + ready);
+    return { result: POST_NO_TARGET, detail: trace.join(' | ') };
+  }
+  note('页面 ' + ready);
+
+  const risk = postRiskWord();
+  if (risk) {
+    note('撞到风控 ' + risk);
+    return { result: POST_FAILED, detail: trace.join(' | '), risk: risk };
+  }
+
+  // 先让脚本自己点。抖音这一下就成了，小红书多半点不动。
+  let open = '';
+  for (let i = 0; i < 4 && !sendStopped(); i++) {
+    open = openDm(t.nickname);
+    if (open.indexOf('ok') === 0) break;
+    await sendNap(2500, '等私信键出现');
+  }
+  note('点私信键 ' + open);
+
+  // 点不动就请人按。
+  //
+  // 小红书那个键只认真实手势，脚本里 click 也好，派一整套鼠标和指针
+  // 事件也好，页面一点反应都没有。手机版是对着屏幕真按一下，
+  // 浏览器里做不到，所以把键标红请人按，这是唯一诚实的做法。
+  if (!chatBoxReady()) {
+    const marked = highlightDmButton();
+    await saySend(marked
+      ? '点一下页面上标红那个私信键，我接着把话发出去'
+      : '在页面上打开跟 ' + (t.nickname || '这个人') + ' 的私信，我接着发');
+    const got = await waitHuman('dmkey', chatBoxReady);
+    note('等人按私信键 ' + (got ? '开了' : '没开'));
+    if (!got) return { result: POST_NO_BTN, detail: trace.join(' | ') };
+  }
+
+  // 浮窗是异步挂上来的，实测一秒多到十几秒都有
+  for (let i = 0; i < 10 && !chatBoxReady() && !sendStopped(); i++) {
+    await sendNap(1500, '等聊天框挂上来');
+  }
+  if (!chatBoxReady()) {
+    note('聊天框没挂上来');
+    return { result: POST_NO_BOX, detail: trace.join(' | ') };
+  }
+
+  // 点错入口会把整个消息中心拉开，里面是一长串会话列表。
+  // 那种情况下页面上确实有输入框，往里填字就发给了最近聊过的人。
+  const inbox = looksLikeInbox();
+  if (inbox) {
+    note('开出来的是消息中心 ' + inbox);
+    return { result: POST_NO_TARGET, detail: trace.join(' | ') };
+  }
+
+  const peer = verifyPeer(t.nickname);
+  note('核对对面 ' + peer);
+  if (peer.indexOf('wrong') === 0) {
+    return { result: POST_NO_TARGET, detail: trace.join(' | ') };
+  }
+
+  const sent = fillAndSend(t.text);
+  note('填字发送 ' + sent);
+  if (resultOf(sent) !== POST_OK) {
+    return { result: resultOf(sent), detail: trace.join(' | ') };
+  }
+
+  // 发完等一会儿再核对。请求还在路上就去找气泡，一定找不到。
+  await sendNap(3000);
+  const check = checkSent(t.text);
+  note('核对结果 ' + check);
+  return { result: resultOf(check), detail: trace.join(' | ') };
+}
+
+// 发一条评论。只填字，最后那一下由人自己按。
+//
+// 人按下去的那一刻程序看不见，所以这条路不查发送结果、不记流水、
+// 也不占今天的额度。记了就是拿猜的结果冒充事实。
+async function sendOneComment(t) {
+  const ready = await waitPageReady(t.note_id, false);
+  if (ready.indexOf('wrong') === 0) return { result: POST_NO_TARGET, detail: ready };
+
+  const risk = postRiskWord();
+  if (risk) return { result: POST_FAILED, detail: '风控 ' + risk, risk: risk };
+
+  if (onDouyin()) {
+    const open = openComments();
+    if (open.indexOf('ok') !== 0) await sendNap(3000, '等评论区展开');
+  }
+
+  // 带昵称的是回复某个人，先在评论区找到他那条评论点回复，
+  // 挂在他下面他才会收到通知。
+  //
+  // 不做这一步的话，话会填进帖主底下那个公共评论框，
+  // 变成在人家评论区公开留言，那是最招举报的一种发法。
+  if (t.nickname) {
+    let hit = '';
+    for (let i = 0; i < 4 && !sendStopped(); i++) {
+      hit = clickReply(t.nickname);
+      if (hit.indexOf('ok') === 0) break;
+      // 评论是懒加载的，翻一屏再找
+      scrollSome(randInt(600, 1000));
+      await sendNap(2500, '在评论区找这个人');
+    }
+    if (hit.indexOf('ok') !== 0) {
+      return { result: POST_NO_TARGET, detail: '评论区里找不到这个人 ' + hit };
+    }
+    await sendNap(1200);
+  }
+
+  let filled = '';
+  for (let i = 0; i < 4 && !sendStopped(); i++) {
+    filled = fillOnly(t.text);
+    if (filled.indexOf('ok') === 0) break;
+    await sendNap(2500, '等评论框出现');
+  }
+  if (filled.indexOf('ok') !== 0) return { result: resultOf(filled), detail: filled };
+
+  await saySend('话填好了，你按页面上的发送键，然后点下一个');
+  await waitHuman('send', null);
+  return { result: 'byhand', detail: '人自己按的' };
+}
+
+// ---------- 状态机 ----------
+
+async function driveSend() {
+  if (Sender.busy) return;
+  const job = Sender.job;
+  if (!job || !job.running) return;
+  if (job.tab && job.tab !== TAB_ID && Date.now() - (job.beat || 0) < TAKEOVER_MS) {
+    return;
+  }
+  if (job.paused) {
+    Sender.pauseFlag = true;
+    return;
+  }
+
+  Sender.busy = true;
+  try {
+    const t = sendTarget(job);
+    if (!t) {
+      await finishSend('完成');
+      return;
+    }
+    if (!onSendPage(job)) {
+      const url = sendWantUrl(job);
+      if (!url) {
+        await nextTarget(null);
+        return;
+      }
+      const left = (job.nextAt || 0) - Date.now();
+      if (left > 0) await sendNap(left, '歇一下，还有');
+      if (sendStopped()) {
+        await finishSend('已停止');
+        return;
+      }
+      await saySend('打开 ' + (t.nickname || t.note_id));
+      location.href = url;
+      return;
+    }
+
+    const got = job.kind === '私信' ? await sendOneDm(t) : await sendOneComment(t);
+    if (got.risk) {
+      // 撞了风控还接着一条条发，是把限流打成封号的主要原因。
+      // 见到就整轮停，不要只跳过当前这条。
+      await saySend('页面提示「' + got.risk + '」，全停了，今天别再发');
+      await finishSend('撞风控停了');
+      return;
+    }
+    await nextTarget(got);
+    if (sendStopped() && Sender.job && Sender.job.running) {
+      await finishSend('已停止');
+    }
+  } catch (e) {
+    await saySend('出错了 ' + (e && e.message ? e.message : e));
+    await finishSend('已停止');
+  } finally {
+    Sender.busy = false;
+  }
+}
+
+async function nextTarget(got) {
+  const job = Sender.job;
+  const t = sendTarget(job);
+  const stats = Object.assign({}, job.stats);
+  let line = '';
+
+  if (got && t) {
+    if (got.result === 'byhand') {
+      // 人自己按的，不记流水也不算数
+      line = '[' + (job.i + 1) + '/' + job.targets.length + '] ' +
+        (t.nickname || '') + ' 话填好了';
+    } else {
+      const ok = got.result === POST_OK;
+      stats[ok ? 'ok' : 'fail'] += 1;
+      await addTouch({
+        kind: job.kind,
+        note_id: t.note_id,
+        user_id: t.user_id,
+        nickname: t.nickname,
+        text: t.text,
+        status: ok ? '成功' : '失败',
+        detail: (ok ? '' : POST_LABEL[got.result] + ' ') + (got.detail || ''),
+        site: t.site,
+        trade: job.trade,
+      });
+      line = '[' + (job.i + 1) + '/' + job.targets.length + '] ' +
+        (t.nickname || '') + ' ' + (ok ? '发出去了' : POST_LABEL[got.result]);
+    }
+  }
+  stats.done += 1;
+
+  const i = job.i + 1;
+  if (i >= job.targets.length || sendStopped()) {
+    await saveSendJob({ i: i, stats: stats, message: line, log: logLine(job, line) });
+    await finishSend(sendStopped() ? '已停止' : '完成');
+    return;
+  }
+
+  // 间隔是一开始就随机切好的，长短参差不齐，加起来正好是设定的总时长。
+  // 每次现算一个随机数的话，所有间隔都挤在平均值附近。
+  const gap = (job.gaps || [])[job.i] || kMinGapSeconds;
+  await saveSendJob({
+    i: i,
+    stats: stats,
+    message: line,
+    log: logLine(job, line),
+    nextAt: Date.now() + gap * 1000,
+  });
+  await sendNap(gap * 1000, '歇一下，还有');
+  if (sendStopped()) {
+    await finishSend('已停止');
+    return;
+  }
+  const url = sendWantUrl(Sender.job);
+  if (url) location.href = url;
+  else await finishSend('完成');
+}
+
+
 // ===== 80-ui.js =====
-// 悬浮面板。整套界面都在这一个盒子里，不动小红书自己的页面。
+// 悬浮面板。整套界面都在这一个盒子里，不动平台自己的页面。
 //
 // 手机上是从底下升起来的一张卡，电脑上是右边的一条竖栏，
 // 两种都能单手够到。页面每跳一次这个面板就重建一次，
 // 状态从库里读回来，所以看起来像一直开着。
+//
+// 页面结构照着手机版来：采集、帖子、人、私信、设置。
 
 const PANEL_CSS = `
 .xhsc-root, .xhsc-root * { box-sizing: border-box; font-family: -apple-system,
   BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif; }
 .xhsc-fab { position: fixed; right: 16px; bottom: 88px; z-index: 2147483000;
   width: 54px; height: 54px; border-radius: 27px; border: none;
-  background: #ff2e4d; color: #fff; font-size: 13px; font-weight: 600;
+  background: var(--xc-accent); color: #fff; font-size: 13px; font-weight: 600;
   box-shadow: 0 6px 20px rgba(0,0,0,.28); cursor: pointer; }
 .xhsc-fab.on { background: #111; }
 .xhsc-panel { position: fixed; z-index: 2147483000; background: #fff; color: #111;
   display: flex; flex-direction: column; box-shadow: 0 -8px 40px rgba(0,0,0,.25);
-  left: 0; right: 0; bottom: 0; height: 78vh; border-radius: 18px 18px 0 0; }
+  left: 0; right: 0; bottom: 0; height: 80vh; border-radius: 18px 18px 0 0; }
 @media (min-width: 900px) {
-  .xhsc-panel { left: auto; top: 0; width: 420px; height: 100vh;
+  .xhsc-panel { left: auto; top: 0; width: 430px; height: 100vh;
     border-radius: 0; box-shadow: -8px 0 40px rgba(0,0,0,.18); }
   .xhsc-fab { bottom: 24px; }
 }
-.xhsc-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+.xhsc-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px;
   border-bottom: 1px solid #eee; }
 .xhsc-title { font-size: 17px; font-weight: 700; flex: 1; }
+.xhsc-site { padding: 6px 12px; border-radius: 15px; background: #f2f2f4;
+  font-size: 13px; color: #444; cursor: pointer; }
 .xhsc-x { border: none; background: #f2f2f4; width: 34px; height: 34px;
   border-radius: 17px; font-size: 17px; cursor: pointer; color: #444; }
 .xhsc-tabs { display: flex; border-bottom: 1px solid #eee; }
-.xhsc-tab { flex: 1; padding: 13px 0; text-align: center; font-size: 15px;
+.xhsc-tab { flex: 1; padding: 12px 0; text-align: center; font-size: 14.5px;
   color: #888; cursor: pointer; border-bottom: 2px solid transparent; }
-.xhsc-tab.on { color: #ff2e4d; font-weight: 600; border-bottom-color: #ff2e4d; }
-.xhsc-body { flex: 1; overflow-y: auto; padding: 14px 16px 28px; }
+.xhsc-tab.on { color: var(--xc-accent); font-weight: 600;
+  border-bottom-color: var(--xc-accent); }
+.xhsc-body { flex: 1; overflow-y: auto; padding: 14px 16px 24px; }
+.xhsc-foot { border-top: 1px solid #eee; padding: 12px 16px;
+  display: flex; gap: 10px; background: #fff; }
+.xhsc-foot .xhsc-btn { flex: 1; }
 .xhsc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.xhsc-row > label { font-size: 15px; width: 84px; flex: none; color: #333; }
-.xhsc-root input[type=text], .xhsc-root input[type=number], .xhsc-root select {
+.xhsc-row > label { font-size: 15px; width: 96px; flex: none; color: #333; }
+.xhsc-root input[type=text], .xhsc-root input[type=number], .xhsc-root select,
+.xhsc-root textarea {
   flex: 1; min-width: 0; height: 42px; padding: 0 12px; font-size: 15px;
-  border: 1px solid #ddd; border-radius: 10px; background: #fff; color: #111; }
-.xhsc-root button { font-size: 15px; }
-.xhsc-btn { height: 42px; padding: 0 18px; border-radius: 10px; border: none;
-  background: #ff2e4d; color: #fff; font-weight: 600; cursor: pointer; }
+  border: 1px solid #ddd; border-radius: 10px; background: #fff; color: #111;
+  font-family: inherit; }
+.xhsc-root textarea { height: 66px; padding: 10px 12px; line-height: 1.6; }
+.xhsc-root button { font-size: 15px; font-family: inherit; }
+.xhsc-btn { height: 44px; padding: 0 18px; border-radius: 10px; border: none;
+  background: var(--xc-accent); color: #fff; font-weight: 600; cursor: pointer; }
 .xhsc-btn.ghost { background: #f2f2f4; color: #222; }
 .xhsc-btn:disabled { opacity: .45; }
 .xhsc-btns { display: flex; gap: 10px; margin: 14px 0; }
 .xhsc-btns .xhsc-btn { flex: 1; }
+.xhsc-nums { display: flex; gap: 10px; margin-bottom: 12px; }
+.xhsc-num { flex: 1; padding: 11px 0; text-align: center; border-radius: 12px;
+  background: #fff; border: 1px solid #eee; cursor: pointer; }
+.xhsc-num.on { background: var(--xc-soft); border-color: transparent; }
+.xhsc-num b { display: block; font-size: 20px; font-weight: 700; color: #111; }
+.xhsc-num.on b { color: var(--xc-accent); }
+.xhsc-num span { font-size: 12px; color: #999; }
 .xhsc-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .xhsc-chip { padding: 8px 13px; border-radius: 16px; background: #f2f2f4;
   font-size: 14px; cursor: pointer; color: #444; }
-.xhsc-chip.on { background: #ffe8ec; color: #ff2e4d; font-weight: 600; }
+.xhsc-chip.on { background: var(--xc-soft); color: var(--xc-accent);
+  font-weight: 600; }
 .xhsc-bar { height: 8px; border-radius: 4px; background: #eee; overflow: hidden;
   margin: 12px 0 8px; }
-.xhsc-bar i { display: block; height: 100%; background: #ff2e4d; width: 0; }
-.xhsc-msg { font-size: 14px; color: #444; min-height: 20px; }
+.xhsc-bar i { display: block; height: 100%; background: var(--xc-accent); width: 0; }
+.xhsc-msg { font-size: 14px; color: #444; min-height: 20px; line-height: 1.7; }
 .xhsc-log { margin-top: 12px; background: #fafafa; border: 1px solid #eee;
   border-radius: 10px; padding: 10px; font-size: 12.5px; line-height: 1.7;
-  color: #666; max-height: 210px; overflow-y: auto;
+  color: #666; max-height: 200px; overflow-y: auto;
   font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
-.xhsc-card { border: 1px solid #eee; border-radius: 12px; padding: 12px;
+.xhsc-card { border: 1px solid #eee; border-radius: 12px; padding: 13px 14px;
   margin-bottom: 10px; }
-.xhsc-card h4 { margin: 0 0 6px; font-size: 15px; font-weight: 600;
-  color: #111; line-height: 1.4; }
-.xhsc-card p { margin: 0 0 8px; font-size: 14px; color: #555; line-height: 1.6; }
-.xhsc-meta { font-size: 12.5px; color: #999; display: flex; gap: 10px;
-  flex-wrap: wrap; margin-bottom: 8px; }
+.xhsc-who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  margin-bottom: 7px; }
+.xhsc-ava { width: 26px; height: 26px; border-radius: 13px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: #fff; }
+.xhsc-name { font-size: 15px; font-weight: 600; color: #111; }
+.xhsc-card p { margin: 0 0 9px; font-size: 14px; color: #555; line-height: 1.7; }
+.xhsc-talk { background: var(--xc-soft); border-radius: 9px; padding: 10px 12px;
+  color: #222; }
 .xhsc-tag { display: inline-block; padding: 2px 8px; border-radius: 9px;
   font-size: 12px; background: #f2f2f4; color: #666; }
-.xhsc-tag.high { background: #ffe8ec; color: #ff2e4d; }
-.xhsc-tag.mid { background: #fff4e0; color: #d68000; }
+.xhsc-tag.hot { background: var(--xc-soft); color: var(--xc-accent); }
+.xhsc-tag.bad { background: #ffe9e9; color: #c62828; }
+.xhsc-time { font-size: 12px; color: #aaa; }
 .xhsc-mini { display: flex; gap: 8px; }
 .xhsc-mini button { flex: 1; height: 36px; border-radius: 9px; border: 1px solid #eee;
-  background: #fff; color: #333; cursor: pointer; }
+  background: #fff; color: #333; cursor: pointer; font-size: 13.5px; }
 .xhsc-empty { text-align: center; color: #aaa; font-size: 14px; padding: 40px 0; }
 .xhsc-warn { background: #fff4e0; color: #a35a00; border-radius: 10px;
-  padding: 11px 12px; font-size: 14px; line-height: 1.6; margin-bottom: 12px; }
+  padding: 11px 12px; font-size: 14px; line-height: 1.7; margin-bottom: 12px; }
+.xhsc-big { background: var(--xc-soft); color: var(--xc-accent); border-radius: 12px;
+  padding: 14px; font-size: 15px; line-height: 1.7; margin-bottom: 12px;
+  font-weight: 600; }
+.xhsc-pager { display: flex; align-items: center; justify-content: center;
+  gap: 16px; padding: 14px 0; font-size: 13.5px; color: #666; }
+.xhsc-pager button { border: none; background: none; color: var(--xc-accent);
+  cursor: pointer; }
+.xhsc-pager button:disabled { color: #ccc; }
+/* 配色照手机版 lib/theme.dart。小红书那一套把饱和度压下来，
+   从正红改成砖红，白底上不刺眼；抖音自己的主色就是黑白，
+   用小红书的色去标抖音的数据，一眼看过去分不出在哪个平台上。 */
+:root { --xc-accent: #d94a3d; --xc-soft: #fcf0ee; }
+.xhsc-root.dy { --xc-accent: #1a1d21; --xc-soft: #f0f0ee; }
 @media (prefers-color-scheme: dark) {
-  .xhsc-panel { background: #17171a; color: #f2f2f4; }
-  .xhsc-head, .xhsc-tabs { border-color: #2a2a2f; }
-  .xhsc-x { background: #26262b; color: #ccc; }
+  :root { --xc-accent: #e0685c; --xc-soft: #261815; }
+  .xhsc-panel { background: #17181b; color: #ededea; }
+  .xhsc-head, .xhsc-tabs, .xhsc-foot { border-color: #2a2a2f; }
+  .xhsc-foot { background: #17171a; }
+  .xhsc-site, .xhsc-x { background: #26262b; color: #ccc; }
   .xhsc-tab { color: #888; }
   .xhsc-row > label { color: #ccc; }
-  .xhsc-root input[type=text], .xhsc-root input[type=number], .xhsc-root select {
+  .xhsc-root input[type=text], .xhsc-root input[type=number],
+  .xhsc-root select, .xhsc-root textarea {
     background: #1f1f24; border-color: #33333a; color: #f2f2f4; }
   .xhsc-btn.ghost { background: #26262b; color: #eee; }
   .xhsc-chip { background: #26262b; color: #bbb; }
-  .xhsc-chip.on { background: #45161f; color: #ff8ba0; }
+  .xhsc-num { background: #1f1f24; border-color: #2a2a2f; }
+  .xhsc-num b { color: #f2f2f4; }
   .xhsc-bar { background: #2a2a2f; }
   .xhsc-log { background: #1c1c20; border-color: #2a2a2f; color: #999; }
   .xhsc-card { border-color: #2a2a2f; }
-  .xhsc-card h4 { color: #f2f2f4; }
+  .xhsc-name { color: #f2f2f4; }
   .xhsc-card p { color: #bbb; }
+  .xhsc-talk { color: #f2f2f4; }
   .xhsc-tag { background: #26262b; color: #aaa; }
   .xhsc-mini button { background: #1f1f24; border-color: #33333a; color: #ddd; }
+  .xhsc-root.dy { --xc-accent: #ededea; --xc-soft: #232529; }
 }
 `;
 
@@ -2514,6 +4279,15 @@ const UI = {
   open: false,
   tab: '采集',
   picked: new Set(),
+  // 人页的筛选。默认只看评论区的人，要私信的就是他们。
+  //
+  // 帖主按时间排在最前面，一进来满屏都是帖主的帖子标题，
+  // 真正应征的人被压在后面翻不到。
+  kind: '评论者',
+  search: '',
+  page: 0,
+  pageSize: 40,
+  sentOnlyOk: false,
 };
 
 function el(tag, cls, html) {
@@ -2523,9 +4297,20 @@ function el(tag, cls, html) {
   return e;
 }
 
+// 头像。没有真头像可用，拿昵称第一个字加一个稳定的颜色顶上，
+// 一列人扫过去至少能靠颜色分开。
+function avatar(name) {
+  const s = asText(name) || '匿';
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffff;
+  const a = el('div', 'xhsc-ava', esc(s.slice(0, 1)));
+  a.style.background = 'hsl(' + (h % 360) + ',52%,58%)';
+  return a;
+}
+
 function mountPanel() {
   if (UI.root) return;
-  const root = el('div', 'xhsc-root');
+  const root = el('div', 'xhsc-root' + (onDouyin() ? ' dy' : ''));
   const style = document.createElement('style');
   style.textContent = PANEL_CSS;
   root.appendChild(style);
@@ -2538,21 +4323,34 @@ function mountPanel() {
   panel.style.display = 'none';
   panel.innerHTML =
     '<div class="xhsc-head"><div class="xhsc-title">获客助手</div>' +
-    '<button class="xhsc-x">×</button></div>' +
+    '<div class="xhsc-site"></div><button class="xhsc-x">×</button></div>' +
     '<div class="xhsc-tabs"></div><div class="xhsc-body"></div>';
   root.appendChild(panel);
-
   document.body.appendChild(root);
+
   UI.root = root;
   UI.panel = panel;
   UI.fab = fab;
 
   panel.querySelector('.xhsc-x').addEventListener('click', () => togglePanel(false));
+
+  // 平台按域名定，点一下跳到另一个站。
+  //
+  // 不做成开关。两个站是两个域，浏览器的库是按域分的，
+  // 在小红书页面上摆一个能切到抖音的开关，切完什么都看不见，那是骗人。
+  const site = panel.querySelector('.xhsc-site');
+  site.textContent = siteNow();
+  site.title = '去' + (onDouyin() ? '小红书' : '抖音');
+  site.addEventListener('click', () => {
+    location.href = otherSiteUrl();
+  });
+
   const tabs = panel.querySelector('.xhsc-tabs');
-  for (const name of ['采集', '帖子', '人', '设置']) {
+  for (const name of ['采集', '帖子', '人', '私信', '设置']) {
     const t = el('div', 'xhsc-tab' + (name === UI.tab ? ' on' : ''), name);
     t.addEventListener('click', () => {
       UI.tab = name;
+      UI.page = 0;
       for (const o of tabs.children) o.classList.toggle('on', o.textContent === name);
       renderBody();
     });
@@ -2571,50 +4369,52 @@ function body() {
   return UI.panel.querySelector('.xhsc-body');
 }
 
+// 底下那条按钮栏。只有人页用得上，别的页面要把它撤掉。
+function foot(make) {
+  const old = UI.panel.querySelector('.xhsc-foot');
+  if (old) old.remove();
+  if (!make) return null;
+  const f = el('div', 'xhsc-foot');
+  UI.panel.appendChild(f);
+  return f;
+}
+
 function renderBody() {
   const b = body();
   b.innerHTML = '';
+  foot(false);
   if (UI.tab === '采集') renderCollect(b);
   else if (UI.tab === '帖子') renderNotes(b);
   else if (UI.tab === '人') renderPeople(b);
+  else if (UI.tab === '私信') renderSent(b);
   else renderSettings(b);
+}
+
+function say(s) {
+  const m = UI.panel.querySelector('.xhsc-toast') || el('div', 'xhsc-toast');
+  m.textContent = s;
+  m.style.cssText = 'position:absolute;left:16px;right:16px;bottom:78px;' +
+    'background:rgba(0,0,0,.86);color:#fff;padding:11px 14px;border-radius:10px;' +
+    'font-size:14px;z-index:5;line-height:1.6;';
+  UI.panel.appendChild(m);
+  clearTimeout(m._t);
+  m._t = setTimeout(() => m.remove(), 2600);
 }
 
 // ---------- 采集页 ----------
 
 function renderCollect(b) {
   const job = Runtime.job || {};
-  const running = !!job.running;
 
   if (!hookInstalled()) {
     b.appendChild(el('div', 'xhsc-warn',
       '钩子没装上，采不到数据。把脚本管理器里的注入方式改成页面环境，刷新重试。'));
   }
-
-  if (running) {
+  if (job.running) {
     renderRunning(b, job);
     return;
   }
 
-  // 行业
-  const rowTrade = el('div', 'xhsc-row', '<label>行业</label>');
-  const sel = el('select');
-  for (const i of allIndustries) {
-    const o = document.createElement('option');
-    o.value = i.key;
-    o.textContent = i.name;
-    if (i.key === Trade.now.key) o.selected = true;
-    sel.appendChild(o);
-  }
-  sel.addEventListener('change', async () => {
-    await Trade.switchTo(sel.value);
-    UI.picked = new Set();
-    renderBody();
-  });
-  rowTrade.appendChild(sel);
-  b.appendChild(rowTrade);
-
-  // 关键词
   const chips = el('div', 'xhsc-chips');
   const words = Trade.now.keywords.slice();
   for (const w of UI.picked) {
@@ -2651,7 +4451,6 @@ function renderCollect(b) {
   rowAdd.appendChild(addBtn);
   b.appendChild(rowAdd);
 
-  // 参数
   const numRow = (label, value, min, max) => {
     const r = el('div', 'xhsc-row', '<label>' + label + '</label>');
     const i = el('input');
@@ -2664,7 +4463,8 @@ function renderCollect(b) {
     return i;
   };
   const nNotes = numRow('采几篇', Limits.crawlSize, kCrawlSizeMin, kCrawlSizeMax);
-  const nMin = numRow('多少分钟采完', Limits.crawlMinutes, kCrawlMinutesMin, kCrawlMinutesMax);
+  const nMin = numRow('多少分钟采完', Limits.crawlMinutes,
+    kCrawlMinutesMin, kCrawlMinutesMax);
   const nCmt = numRow('每篇评论', 60, 0, 500);
 
   const rowOnly = el('div', 'xhsc-row', '<label>只要帖主</label>');
@@ -2680,7 +4480,7 @@ function renderCollect(b) {
   start.addEventListener('click', async () => {
     const picked = [...UI.picked];
     if (!picked.length) {
-      alert('先选一个关键词');
+      say('先选一个关键词');
       return;
     }
     await Limits.save(nNotes.value, nMin.value);
@@ -2705,10 +4505,11 @@ function renderCollect(b) {
 function renderRunning(b, job) {
   const stats = job.stats || {};
   const bar = el('div', 'xhsc-bar', '<i></i>');
-  bar.firstChild.style.width = Math.round(progressRatio(stats.done, stats.total) * 100) + '%';
+  bar.firstChild.style.width =
+    Math.round(progressRatio(stats.done, stats.total) * 100) + '%';
   b.appendChild(el('div', 'xhsc-msg',
-    esc('第 ' + (job.wi + 1) + '/' + job.keywords.length + ' 个词 ' + currentWord(job) +
-      '　' + (stats.done || 0) + '/' + (stats.total || 0) + ' 篇')));
+    esc('第 ' + (job.wi + 1) + '/' + job.keywords.length + ' 个词 ' +
+      currentWord(job) + '　' + (stats.done || 0) + '/' + (stats.total || 0) + ' 篇')));
   b.appendChild(bar);
   b.appendChild(el('div', 'xhsc-msg', esc(job.message || '')));
   b.appendChild(el('div', 'xhsc-msg',
@@ -2721,9 +4522,7 @@ function renderRunning(b, job) {
     else await pauseCollect();
   });
   const stop = el('button', 'xhsc-btn', '停止');
-  stop.addEventListener('click', async () => {
-    await stopCollect();
-  });
+  stop.addEventListener('click', () => stopCollect());
   btns.appendChild(pause);
   btns.appendChild(stop);
   b.appendChild(btns);
@@ -2747,95 +4546,368 @@ async function renderNotes(b) {
   }
   for (const n of rows.slice(0, 200)) {
     const c = el('div', 'xhsc-card');
-    c.appendChild(el('h4', '', esc(n.title || head(n.content, 24) || '无标题')));
-    c.appendChild(el('div', 'xhsc-meta',
-      '<span>' + esc(n.author_name) + '</span>' +
-      '<span>赞 ' + asInt(n.likes) + '</span>' +
-      '<span>评论 ' + asInt(n.comment_cnt) + '</span>' +
-      (n.ip_location ? '<span>' + esc(n.ip_location) + '</span>' : '') +
-      (n.keyword ? '<span class="xhsc-tag">' + esc(n.keyword) + '</span>' : '')));
+    const who = el('div', 'xhsc-who');
+    who.appendChild(el('div', 'xhsc-name',
+      esc(n.title || head(n.content, 24) || '无标题')));
+    c.appendChild(who);
+    c.appendChild(el('div', 'xhsc-who',
+      '<span class="xhsc-tag">' + esc(n.author_name) + '</span>' +
+      '<span class="xhsc-tag">赞 ' + asInt(n.likes) + '</span>' +
+      '<span class="xhsc-tag">评论 ' + asInt(n.comment_cnt) + '</span>' +
+      (n.ip_location ? '<span class="xhsc-tag">' + esc(n.ip_location) + '</span>' : '') +
+      (n.keyword ? '<span class="xhsc-tag hot">' + esc(n.keyword) + '</span>' : '')));
     if (n.content) c.appendChild(el('p', '', esc(head(n.content, 90))));
-    const mini = el('div', 'xhsc-mini');
-    const open = el('button', '', '打开原帖');
-    open.addEventListener('click', () => {
+    c.style.cursor = 'pointer';
+    c.addEventListener('click', () => {
       if (n.note_url) window.open(n.note_url, '_blank');
     });
-    mini.appendChild(open);
-    c.appendChild(mini);
     b.appendChild(c);
   }
 }
 
 // ---------- 人页 ----------
 
-async function renderPeople(b) {
-  b.appendChild(el('div', 'xhsc-empty', '读取中'));
+// 这一页的数据只查一次，翻页和切筛选都在内存里做。
+let _peopleCache = null;
+
+async function loadPeople() {
   const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
   const blocked = await blockedIds();
-  const res = runFunnel(all, { blocked: blocked, highOnly: false });
-  b.innerHTML = '';
+  const res = runFunnel(all, { blocked: blocked });
+  _peopleCache = { all: all, keep: res.keep, stat: res.stat, blocked: blocked };
+  return _peopleCache;
+}
 
-  const s = res.stat;
-  b.appendChild(el('div', 'xhsc-meta',
-    '<span class="xhsc-tag">共 ' + s.all + '</span>' +
-    '<span class="xhsc-tag high">高 ' + s.high + '</span>' +
-    '<span class="xhsc-tag mid">中 ' + s.mid + '</span>' +
-    '<span class="xhsc-tag">丢 ' + s.low + '</span>' +
-    '<span class="xhsc-tag">广告 ' + s.risky + '</span>' +
-    '<span class="xhsc-tag">拉黑 ' + s.blocked + '</span>'));
+function draftFor(p) {
+  return makeReply(p.said, p.user_id, p.ip_location);
+}
 
-  if (!res.keep.length) {
-    b.appendChild(el('div', 'xhsc-empty', '还没有可联系的人'));
+// 从一批人里挑出真正发得出去的。
+//
+// 只取评论区的人，不给帖主发。评论区里说想找对象的那些人是自己开口的，
+// 私信他顺理成章；帖主多半是做号的或者发攻略的，给他发转化低还容易被举报。
+// 真要给某个帖主发，用他那一行上的按钮。
+function sendableOf(cache) {
+  return cache.keep.filter((p) => p.user_id && p.kind !== '帖主' &&
+    canOpenProfile(p.user_id));
+}
+
+// 这一批要去哪几篇帖子底下评论。
+//
+// 按帖子去重。同一篇帖子底下有好几个人，评论是发给帖子的不是发给人的，
+// 不去重的话同一篇会被评好几条，那是刷屏。
+function postableOf(cache) {
+  const seen = new Set();
+  const out = [];
+  for (const p of cache.keep) {
+    if (!p.note_id || seen.has(p.note_id)) continue;
+    seen.add(p.note_id);
+    out.push(p);
+  }
+  return out;
+}
+
+async function renderPeople(b) {
+  // 正在发的时候这一页就是发送进度，别的什么都别显示
+  if (Sender.job && Sender.job.running) {
+    renderSending(b, Sender.job);
     return;
   }
-  for (const p of res.keep.slice(0, 200)) {
+
+  b.appendChild(el('div', 'xhsc-empty', '读取中'));
+  const cache = await loadPeople();
+  b.innerHTML = '';
+
+  const counts = { '': cache.keep.length, 帖主: 0, 评论者: 0 };
+  for (const p of cache.keep) counts[p.kind] += 1;
+
+  // 数字条本身就是筛选，点哪个看哪类
+  const nums = el('div', 'xhsc-nums');
+  for (const [value, label] of [['', '全部'], ['帖主', '帖主'], ['评论者', '评论区的人']]) {
+    const one = el('div', 'xhsc-num' + (UI.kind === value ? ' on' : ''),
+      '<b>' + counts[value] + '</b><span>' + label + '</span>');
+    one.addEventListener('click', () => {
+      UI.kind = value;
+      UI.page = 0;
+      renderBody();
+    });
+    nums.appendChild(one);
+  }
+  b.appendChild(nums);
+
+  const rowS = el('div', 'xhsc-row');
+  const box = el('input');
+  box.type = 'text';
+  box.placeholder = '搜昵称或者留言';
+  box.value = UI.search;
+  box.addEventListener('change', () => {
+    UI.search = box.value.trim();
+    UI.page = 0;
+    renderBody();
+  });
+  rowS.appendChild(box);
+  b.appendChild(rowS);
+
+  let rows = cache.keep;
+  if (UI.kind) rows = rows.filter((p) => p.kind === UI.kind);
+  if (UI.search) {
+    rows = rows.filter((p) => asText(p.said).includes(UI.search) ||
+      asText(p.nickname).includes(UI.search));
+  }
+  if (!rows.length) {
+    b.appendChild(el('div', 'xhsc-empty', '这里还没有人，先去采集'));
+    return;
+  }
+
+  const pages = Math.ceil(rows.length / UI.pageSize);
+  if (UI.page >= pages) UI.page = 0;
+  for (const p of rows.slice(UI.page * UI.pageSize, (UI.page + 1) * UI.pageSize)) {
+    b.appendChild(personCard(p));
+  }
+  if (pages > 1) b.appendChild(pager(pages));
+
+  // 钉在底下那两个按钮。这一页真正要做的就这两件事。
+  //
+  // 原来它们夹在筛选和名单中间，往下翻一屏就看不见了。
+  const f = foot(true);
+  const dmList = sendableOf(cache);
+  const noteList = postableOf(cache);
+  const dm = el('button', 'xhsc-btn', '私信 ' + dmList.length + ' 个人');
+  dm.disabled = !dmList.length;
+  dm.addEventListener('click', () => launchSend(dmList, '私信'));
+  const cm = el('button', 'xhsc-btn ghost', '评论 ' + noteList.length + ' 篇');
+  cm.disabled = !noteList.length;
+  cm.addEventListener('click', () => launchComment(noteList));
+  f.appendChild(dm);
+  f.appendChild(cm);
+}
+
+function pager(pages) {
+  const p = el('div', 'xhsc-pager');
+  const prev = el('button', '', '上一页');
+  prev.disabled = UI.page === 0;
+  prev.addEventListener('click', () => {
+    UI.page -= 1;
+    renderBody();
+  });
+  const next = el('button', '', '下一页');
+  next.disabled = UI.page >= pages - 1;
+  next.addEventListener('click', () => {
+    UI.page += 1;
+    renderBody();
+  });
+  p.appendChild(prev);
+  p.appendChild(el('span', '', (UI.page + 1) + ' / ' + pages));
+  p.appendChild(next);
+  return p;
+}
+
+function personCard(p) {
+  const isAuthor = p.kind === '帖主';
+  const c = el('div', 'xhsc-card');
+  const who = el('div', 'xhsc-who');
+  who.appendChild(avatar(p.nickname));
+  who.appendChild(el('div', 'xhsc-name', esc(p.nickname || '匿名')));
+  who.appendChild(el('span', 'xhsc-tag' + (isAuthor ? ' hot' : ''), esc(p.kind)));
+  if (p.intent === INTENT_HIGH) who.appendChild(el('span', 'xhsc-tag hot', '高意向'));
+  if (p.ip_location) who.appendChild(el('span', 'xhsc-tag', esc(p.ip_location)));
+  if (p.ts) who.appendChild(el('span', 'xhsc-time', esc(asText(p.ts).slice(0, 16))));
+  c.appendChild(who);
+  c.appendChild(el('p', '', esc(head(p.said, 150))));
+
+  const talk = draftFor(p);
+  c.appendChild(el('p', 'xhsc-talk', esc(talk)));
+
+  const mini = el('div', 'xhsc-mini');
+  // 帖主不给私信。帖主多半是做号的或者发攻略的，私信他转化低还容易被举报，
+  // 要接触就在他帖子底下评论。
+  if (!isAuthor && canOpenProfile(p.user_id)) {
+    const dm = el('button', '', '私信');
+    dm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      launchSend([p], '私信');
+    });
+    mini.appendChild(dm);
+  }
+  const cm = el('button', '', isAuthor ? '评论' : '回复');
+  cm.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!p.note_id) {
+      say('这条没有原帖，评论不了');
+      return;
+    }
+    // 帖主没有自己的评论可回，昵称留空，脚本就只找公共评论框；
+    // 评论者带着昵称，脚本会去评论区找他那条评论点回复。
+    launchSend([Object.assign({}, p, {
+      text: talk,
+      nickname: isAuthor ? '' : p.nickname,
+    })], '评论');
+  });
+  mini.appendChild(cm);
+
+  const copy = el('button', '', '复制话术');
+  copy.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await copyText(talk);
+    copy.textContent = '已复制';
+  });
+  mini.appendChild(copy);
+
+  const ban = el('button', '', '拉黑');
+  ban.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await blockUser(p.user_id, p.nickname, '手动拉黑');
+    c.remove();
+    say((p.nickname || '这个人') + ' 拉黑了');
+  });
+  mini.appendChild(ban);
+  c.appendChild(mini);
+
+  // 点卡片就是看原帖，那是顺手确认这个人说话场景的动作
+  c.style.cursor = 'pointer';
+  c.addEventListener('click', () => {
+    const u = p.note_url || noteUrlHere(p.note_id, p.xsec_token);
+    if (u) window.open(u, '_blank');
+  });
+  return c;
+}
+
+// ---------- 发送 ----------
+
+async function launchSend(people, kind) {
+  const list = people.map((p) => Object.assign({}, p, { text: p.text || draftFor(p) }));
+  // 单发之前看看是不是紧挨着上一条。
+  //
+  // 只拦一件事：两条贴在一起发。真人再快也要看一眼再点，
+  // 秒级连发是程序才做得出来的动作。
+  const gap = await secondsSinceLastTouch();
+  if (gap < kMinGapSeconds) {
+    say('离上一条太近了，等 ' + (kMinGapSeconds - gap) + ' 秒再发');
+    return;
+  }
+  const r = await startSend(list, kind);
+  if (!r.ok) say(r.why);
+  else renderBody();
+}
+
+// 批量去帖子底下评论。
+//
+// 话术从设置里勾上的那几条里随机挑。同一批人不能都发一样的话，
+// 一模一样的评论出现在几十篇帖子底下，一眼就是机器。
+async function launchComment(notes) {
+  const talks = Trade.pickedTalks();
+  if (!talks.length) {
+    say('先去设置里写几条评论话术');
+    return;
+  }
+  const list = notes.map((p) => Object.assign({}, p, {
+    text: talks[Math.floor(Math.random() * talks.length)],
+    // 只在帖子底下发新评论，不去回复某个人。
+    // 回复某个人要在几百条评论里把他找出来，很容易找错。
+    nickname: '',
+  }));
+  const r = await startSend(list, '评论');
+  if (!r.ok) say(r.why);
+  else renderBody();
+}
+
+function renderSending(b, job) {
+  const stats = job.stats || {};
+  const total = (job.targets || []).length;
+  b.appendChild(el('div', 'xhsc-msg',
+    esc('正在' + job.kind + '　' + (job.i + 1) + '/' + total)));
+  const bar = el('div', 'xhsc-bar', '<i></i>');
+  bar.firstChild.style.width = Math.round(progressRatio(job.i, total) * 100) + '%';
+  b.appendChild(bar);
+
+  // 等人动手的时候，把要做的事摆成一整块，别混在日志里
+  if (job.waiting === 'dmkey') {
+    b.appendChild(el('div', 'xhsc-big', esc(job.message || '点一下页面上标红那个私信键')));
+  } else if (job.waiting === 'send') {
+    b.appendChild(el('div', 'xhsc-big', '话已经填好了，按页面上的发送键，然后点下面的下一个'));
+    const next = el('div', 'xhsc-btns');
+    const btn = el('button', 'xhsc-btn', '我发过了，下一个');
+    btn.addEventListener('click', () => humanDone());
+    next.appendChild(btn);
+    b.appendChild(next);
+  } else {
+    b.appendChild(el('div', 'xhsc-msg', esc(job.message || '')));
+  }
+
+  b.appendChild(el('div', 'xhsc-msg',
+    esc('成功 ' + (stats.ok || 0) + '　失败 ' + (stats.fail || 0))));
+
+  const btns = el('div', 'xhsc-btns');
+  const pause = el('button', 'xhsc-btn ghost', job.paused ? '继续' : '暂停');
+  pause.addEventListener('click', () => (job.paused ? resumeSend() : pauseSend()));
+  const stop = el('button', 'xhsc-btn', '停止');
+  stop.addEventListener('click', () => stopSend());
+  btns.appendChild(pause);
+  btns.appendChild(stop);
+  b.appendChild(btns);
+
+  if ((job.log || []).length) {
+    b.appendChild(el('div', 'xhsc-log', esc(job.log.slice(-40).join('\n'))));
+  }
+}
+
+// ---------- 私信记录 ----------
+
+// 发过谁，他当初说了什么，我们回了什么。
+//
+// 这三样必须摆在一起看。只看我们发了什么，判断不了话说得对不对；
+// 只看对方原话，又不知道我们回的是不是这个人的情况。
+async function renderSent(b) {
+  b.appendChild(el('div', 'xhsc-empty', '读取中'));
+  const rows = await sentList(500, Trade.now.key);
+  b.innerHTML = '';
+
+  const ok = rows.filter((r) => r.status === '成功').length;
+  const nums = el('div', 'xhsc-nums');
+  const mk = (value, label, n, clickable) => {
+    const one = el('div', 'xhsc-num' + (clickable && UI.sentOnlyOk === value ? ' on' : ''),
+      '<b>' + n + '</b><span>' + label + '</span>');
+    if (clickable) {
+      one.addEventListener('click', () => {
+        UI.sentOnlyOk = value;
+        renderBody();
+      });
+    }
+    return one;
+  };
+  nums.appendChild(mk(false, '全部', rows.length, true));
+  nums.appendChild(mk(true, '成功', ok, true));
+  // 失败那一格只报数，点不了。失败的记录混在全部里看更省事。
+  nums.appendChild(mk(null, '失败', rows.length - ok, false));
+  b.appendChild(nums);
+
+  const list = UI.sentOnlyOk ? rows.filter((r) => r.status === '成功') : rows;
+  if (!list.length) {
+    b.appendChild(el('div', 'xhsc-empty', '还没发过私信'));
+    return;
+  }
+  for (const s of list) {
+    const good = s.status === '成功';
     const c = el('div', 'xhsc-card');
-    const cls = p.intent === INTENT_HIGH ? 'high' : 'mid';
-    c.appendChild(el('h4', '', esc(p.nickname || '无名') +
-      ' <span class="xhsc-tag ' + cls + '">' + esc(p.intent) + '</span>'));
-    c.appendChild(el('div', 'xhsc-meta',
-      '<span>' + esc(p.kind) + '</span>' +
-      (p.ip_location ? '<span>' + esc(p.ip_location) + '</span>' : '') +
-      (p.ts ? '<span>' + esc(p.ts) + '</span>' : '')));
-    c.appendChild(el('p', '', esc(head(p.said, 120))));
-
-    const reply = makeReply(p.said, p.user_id, p.ip_location);
-    const box = el('p', '', esc(reply));
-    box.style.cssText = 'background:rgba(255,46,77,.07);padding:10px;border-radius:9px;';
-    c.appendChild(box);
-
-    const mini = el('div', 'xhsc-mini');
-    const copy = el('button', '', '复制话术');
-    copy.addEventListener('click', async () => {
-      await copyText(reply);
-      copy.textContent = '已复制';
-      await addTouch({
-        kind: '私信', note_id: p.note_id, comment_id: p.comment_id,
-        user_id: p.user_id, nickname: p.nickname, text: reply,
-        status: '已复制', detail: head(p.said, 60), site: p.site, trade: p.trade,
-      });
-    });
-    const go = el('button', '', '去他主页');
-    go.addEventListener('click', () => {
-      const u = buildUserUrl(p.user_id);
-      if (u) window.open(u, '_blank');
-    });
-    const ban = el('button', '', '拉黑');
-    ban.addEventListener('click', async () => {
-      await addTouch({
-        kind: '拉黑', user_id: p.user_id, nickname: p.nickname,
-        text: '', status: '已拉黑', detail: head(p.said, 60),
-        site: p.site, trade: p.trade,
-      });
-      c.remove();
-    });
-    mini.appendChild(copy);
-    mini.appendChild(go);
-    mini.appendChild(ban);
-    c.appendChild(mini);
+    const who = el('div', 'xhsc-who');
+    who.appendChild(avatar(s.nickname));
+    who.appendChild(el('div', 'xhsc-name', esc(s.nickname || '匿名')));
+    who.appendChild(el('span', 'xhsc-tag' + (good ? ' hot' : ' bad'), esc(s.status)));
+    c.appendChild(who);
+    if (s.said) c.appendChild(el('p', '', esc(head(s.said, 120))));
+    c.appendChild(el('p', 'xhsc-talk', esc(s.text)));
+    const foot2 = el('div', 'xhsc-who');
+    foot2.appendChild(el('span', 'xhsc-time', esc(asText(s.at).slice(0, 16))));
+    // 失败的把原因带出来，光写个失败查不出卡在哪一步
+    if (!good && s.detail) {
+      foot2.appendChild(el('span', 'xhsc-time', esc(head(s.detail.split('|')[0], 40))));
+    }
+    c.appendChild(foot2);
     b.appendChild(c);
   }
 }
+
+// ---------- 设置页 ----------
 
 async function copyText(text) {
   try {
@@ -2856,34 +4928,121 @@ async function copyText(text) {
   }
 }
 
-// ---------- 设置页 ----------
-
 async function renderSettings(b) {
   const c = await counts();
-  b.appendChild(el('div', 'xhsc-meta',
+  b.appendChild(el('div', 'xhsc-who',
     '<span class="xhsc-tag">帖子 ' + c.notes + '</span>' +
     '<span class="xhsc-tag">评论 ' + c.comments + '</span>' +
     '<span class="xhsc-tag">' + (hookInstalled() ? '钩子已装' : '钩子没装上') + '</span>'));
 
+  // 行业
+  const rowTrade = el('div', 'xhsc-row', '<label>行业</label>');
+  const sel = el('select');
+  for (const i of allIndustries) {
+    const o = document.createElement('option');
+    o.value = i.key;
+    o.textContent = i.name;
+    if (i.key === Trade.now.key) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', async () => {
+    await Trade.switchTo(sel.value);
+    UI.picked = new Set();
+    _peopleCache = null;
+    renderBody();
+  });
+  rowTrade.appendChild(sel);
+  b.appendChild(rowTrade);
+
+  // 发送节奏
+  const nSize = el('input');
+  nSize.type = 'number';
+  nSize.value = Limits.batchSize;
+  nSize.min = kBatchSizeMin;
+  nSize.max = kBatchSizeMax;
+  const rowSize = el('div', 'xhsc-row', '<label>一批发几个</label>');
+  rowSize.appendChild(nSize);
+  b.appendChild(rowSize);
+
+  const nMin = el('input');
+  nMin.type = 'number';
+  nMin.value = Limits.batchMinutes;
+  nMin.min = kBatchMinutesMin;
+  nMin.max = kBatchMinutesMax;
+  const rowMin = el('div', 'xhsc-row', '<label>多少分钟发完</label>');
+  rowMin.appendChild(nMin);
+  b.appendChild(rowMin);
+
+  const saveRow = el('div', 'xhsc-btns');
+  const saveBtn = el('button', 'xhsc-btn ghost', '记下这个节奏');
+  saveBtn.addEventListener('click', async () => {
+    await Limits.saveBatch(nSize.value, nMin.value);
+    // 真快成这样也照发，只是把话说在前面
+    say(Limits.tooFast()
+      ? '记下了，平均 ' + Math.round(Limits.avgGapSeconds()) + ' 秒一条，比真人快'
+      : '记下了');
+  });
+  saveRow.appendChild(saveBtn);
+  b.appendChild(saveRow);
+
+  // 评论话术
+  b.appendChild(el('div', 'xhsc-msg', '评论话术'));
+  for (let i = 0; i < Trade.talks.length; i++) {
+    const t = Trade.talks[i];
+    const card = el('div', 'xhsc-card');
+    const ta = el('textarea');
+    ta.value = t.text;
+    ta.addEventListener('change', async () => {
+      Trade.talks[i].text = ta.value.trim();
+      await Trade.saveTalks();
+    });
+    card.appendChild(ta);
+    const mini = el('div', 'xhsc-mini');
+    const on = el('button', '', t.on ? '发这条' : '不发这条');
+    on.addEventListener('click', async () => {
+      Trade.talks[i].on = !Trade.talks[i].on;
+      await Trade.saveTalks();
+      renderBody();
+    });
+    const del = el('button', '', '删掉');
+    del.addEventListener('click', async () => {
+      Trade.talks.splice(i, 1);
+      await Trade.saveTalks();
+      renderBody();
+    });
+    mini.appendChild(on);
+    mini.appendChild(del);
+    card.appendChild(mini);
+    b.appendChild(card);
+  }
+  const addRow = el('div', 'xhsc-btns');
+  const addBtn = el('button', 'xhsc-btn ghost', '加一条话术');
+  addBtn.addEventListener('click', async () => {
+    Trade.talks.push({ text: '', on: true });
+    await Trade.saveTalks();
+    renderBody();
+  });
+  addRow.appendChild(addBtn);
+  b.appendChild(addRow);
+
+  // 数据
   const add = (text, fn, ghost) => {
     const row = el('div', 'xhsc-btns');
     const btn = el('button', 'xhsc-btn' + (ghost ? ' ghost' : ''), text);
     btn.addEventListener('click', fn);
     row.appendChild(btn);
     b.appendChild(row);
-    return btn;
   };
 
   add('导出全部数据', async () => {
     const data = await exportAll();
-    download('获客数据_' + todayCst() + '.json', JSON.stringify(data), 'application/json');
+    download('获客数据_' + siteNow() + '_' + todayCst() + '.json',
+      JSON.stringify(data), 'application/json');
   }, true);
 
   add('导出人名单表格', async () => {
-    const rows = await listPeople({ trade: Trade.now.key, order: 'likes' });
-    const blocked = await blockedIds();
-    const res = runFunnel(rows, { blocked: blocked });
-    download('人_' + todayCst() + '.csv', peopleCsv(res.keep), 'text/csv');
+    const cache = await loadPeople();
+    download('人_' + todayCst() + '.csv', peopleCsv(cache.keep), 'text/csv');
   }, true);
 
   add('导出帖子表格', async () => {
@@ -2901,10 +5060,11 @@ async function renderSettings(b) {
     if (!f) return;
     try {
       const n = await importAll(JSON.parse(await f.text()));
-      alert('导入了 ' + n + ' 条');
+      say('导入了 ' + n + ' 条');
     } catch (e) {
-      alert('这个文件读不了');
+      say('这个文件读不了');
     }
+    _peopleCache = null;
     renderBody();
   });
   const imp = el('button', 'xhsc-btn ghost', '导入数据文件');
@@ -2916,6 +5076,7 @@ async function renderSettings(b) {
   add('清空采到的数据', async () => {
     if (!confirm('帖子和评论会全部删掉，先导出一份再清。确定清空？')) return;
     await clearData();
+    _peopleCache = null;
     renderBody();
   });
 }
@@ -2930,37 +5091,54 @@ async function renderSettings(b) {
 installHooks();
 
 async function boot() {
-  // 采集在跑的时候，页面每跳一次这里就重来一次，
+  // 采集和发送都是靠跳页面推进的，页面每跳一次这里就重来一次，
   // 所以这几步必须便宜且可以重复做。
   await Trade.load();
   await Limits.load();
+  await Limits.loadBatch();
   Runtime.job = (await getJob()) || null;
+  Sender.job = (await getSendJob()) || null;
 
   mountPanel();
 
-  let wasRunning = null;
-  Runtime.onChange = (job) => {
+  const busyNow = () =>
+    !!(Runtime.job && Runtime.job.running) || !!(Sender.job && Sender.job.running);
+
+  let wasBusy = null;
+  const onAny = () => {
     if (!UI.open) {
-      // 关着的时候只让按钮变个色，说明有活在跑
-      UI.fab.textContent = job && job.running ? '采集中' : '获客';
+      // 关着的时候只让按钮变个字，说明有活在跑
+      UI.fab.textContent = busyNow() ? '跑着呢' : '获客';
       return;
     }
-    if (UI.tab !== '采集') return;
-    // 采集页在跑的时候没有输入框，随便重画；不跑的时候重画会把
+    const running = busyNow();
+    // 跑起来的页面上没有输入框，随便重画；不跑的时候重画会把
     // 用户填了一半的参数抹掉，所以只在运行状态变了的时候重画
-    const running = !!(job && job.running);
-    if (running || wasRunning !== running) renderBody();
-    wasRunning = running;
+    if (running || wasBusy !== running) renderBody();
+    wasBusy = running;
   };
-  wasRunning = !!(Runtime.job && Runtime.job.running);
-  if (wasRunning) {
-    UI.fab.textContent = '采集中';
+  Runtime.onChange = onAny;
+  Sender.onChange = onAny;
+
+  wasBusy = busyNow();
+  if (wasBusy) {
+    UI.fab.textContent = '跑着呢';
+    // 发送时默认停在人页，那一页就是发送进度
+    if (Sender.job && Sender.job.running) UI.tab = '人';
     togglePanel(true);
+    for (const o of UI.panel.querySelectorAll('.xhsc-tab')) {
+      o.classList.toggle('on', o.textContent === UI.tab);
+    }
   }
 
   startHeartbeat();
-  // 有没有活要接着干，问状态机自己
-  await drive();
+
+  // 有没有活要接着干，问状态机自己。
+  //
+  // 两台状态机都靠跳页面推进，同时跑会互相把页面抢走，所以一次只让一台动。
+  // 发送优先：它是一条一条留痕的，被打断的代价比采集大得多。
+  if (Sender.job && Sender.job.running) await driveSend();
+  else await drive();
 }
 
 if (document.readyState === 'loading') {
@@ -2978,18 +5156,27 @@ if (document.readyState === 'loading') {
 window.__xhs = {
   Buckets: Buckets,
   Runtime: Runtime,
+  Sender: Sender,
   drive: drive,
+  driveSend: driveSend,
   startCollect: startCollect,
   stopCollect: stopCollect,
+  startSend: startSend,
+  stopSend: stopSend,
+  humanDone: humanDone,
   parseCaptured: parseCaptured,
+  parseDouyin: parseDouyin,
+  parseHere: parseHere,
   Limits: Limits,
   Trade: Trade,
   hookInstalled: hookInstalled,
   exportAll: exportAll,
   importAll: importAll,
   listPeople: listPeople,
+  sentList: sentList,
   makeReply: makeReply,
   renderBody: renderBody,
+  siteNow: siteNow,
   UI: UI,
 };
 

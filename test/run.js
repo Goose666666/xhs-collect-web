@@ -8,8 +8,8 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.join(__dirname, '..');
-const files = ['10-util.js', '20-parse.js', '40-industry.js', '45-limits.js',
-  '50-funnel.js', '55-reply.js', '58-csv.js'];
+const files = ['10-util.js', '20-parse.js', '22-douyin.js',
+  '40-industry.js', '45-limits.js', '50-funnel.js', '55-reply.js', '58-csv.js'];
 
 // 这几块不碰浏览器，给个空壳就能跑
 const shim = `
@@ -28,7 +28,9 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'parseCaptured, parseSearch, parseFeed, parseComments, parseSubComments, ' +
   'parseNoteState, buildNoteUrl, searchUrl, judge, judgePerson, saidStop, ' +
   'runFunnel, INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY, parseWants, ' +
-  'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits };', ctx);
+  'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
+  'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
+  'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -340,6 +342,123 @@ group('导出表格', () => {
   }]);
   ok(csv.includes('昵称,类型,属地,说的话,时间,点赞,关键词,笔记标题'), '表头跟手机版一致');
   ok(csv.includes('小明,评论者,重庆,举手'), '数据行');
+});
+
+// ---------- 抖音 ----------
+
+group('认抖音的接口', () => {
+  eq(A.douyinBucketOf('https://www.douyin.com/aweme/v1/web/general/search/single/?x=1'),
+    'search', '综合搜索');
+  eq(A.douyinBucketOf('https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=7'),
+    'comment', '评论');
+  eq(A.douyinBucketOf('https://www.douyin.com/aweme/v1/web/comment/list/reply/?x=1'),
+    'sub_comment', '二级评论要排在评论前面');
+  eq(A.douyinBucketOf('https://www.douyin.com/aweme/v1/web/aweme/detail/?x=1'),
+    'feed', '详情');
+  eq(A.douyinBucketOf('https://edith.xiaohongshu.com/api/sns/web/v1/feed'), '',
+    '小红书的接口不归它管');
+  eq(A.douyinBucketOf('https://www.douyin.com/video/123'), '', '页面地址不是接口');
+
+  eq(A.videoUrl('7123'), 'https://www.douyin.com/video/7123', '作品地址');
+  ok(A.douyinSearchUrl('找对象').includes('%'), '关键词要转义');
+  eq(A.douyinUserUrl('MS4wLjABAAAA'), 'https://www.douyin.com/user/MS4wLjABAAAA', '主页');
+  ok(A.canOpenDouyinProfile('MS4wLjABAAAA'), 'sec_uid 开得了');
+  ok(!A.canOpenDouyinProfile('1234567890'), '纯数字的 uid 开不了，会被重定向');
+});
+
+const dySearch = JSON.stringify({
+  has_more: 1,
+  data: [
+    {
+      aweme_info: {
+        aweme_id: '7311',
+        desc: '本人98年，坐标重庆，想找个认真谈的对象 #脱单 #相亲',
+        create_time: 1754006400,
+        author: { sec_uid: 'MS4wAAA', nickname: '小鱼', ip_location: 'IP属地:重庆' },
+        statistics: { digg_count: 12000, comment_count: 24 },
+        text_extra: [{ hashtag_name: '脱单' }, { hashtag_name: '相亲' }],
+        video: { origin_cover: { url_list: ['https://x/c.jpg'] } },
+      },
+    },
+    { user_info: { uid: '1' } },
+  ],
+});
+
+group('解析抖音搜索', () => {
+  const r = A.parseDouyin(
+    'https://www.douyin.com/aweme/v1/web/general/search/single/?keyword=x',
+    dySearch, '脱单');
+  eq(r.kind, 'search', '桶名');
+  eq(r.hasMore, true, 'has_more 是 1 就是还有');
+  eq(r.notes.length, 1, '用户卡要剔掉，只留作品');
+  const n = r.notes[0];
+  eq(n.note_id, '7311', '作品 id');
+  // 抖音没有标题，取正文第一句。断句只认句号感叹号问号，逗号不算，
+  // 所以这条没有句号的正文整条就是标题
+  eq(n.title, '本人98年，坐标重庆，想找个认真谈的对象 #脱单 #相亲',
+    '没有句号就整条当标题');
+  eq(A.noteFromAweme({ aweme_id: '1', desc: '第一句。第二句也很长' }, '').title,
+    '第一句', '有句号就只取第一句');
+  eq(n.author_id, 'MS4wAAA', '作者用 sec_uid，不用数字 uid');
+  eq(n.author_name, '小鱼', '作者昵称');
+  eq(n.likes, 12000, '点赞');
+  eq(n.ip_location, '重庆', 'IP属地那个前缀要去掉');
+  eq(n.topics, '#脱单 #相亲', '话题');
+  eq(n.publish_time, '2025-08-01 08:00:00', '秒级时间戳');
+  eq(n.note_url, 'https://www.douyin.com/video/7311', '作品地址');
+  eq(n.xsec_token, '', '抖音不用 token');
+  eq(n.site, '抖音', '平台在解析这一步就定死');
+});
+
+const dyComments = JSON.stringify({
+  has_more: 0,
+  comments: [
+    {
+      cid: 'c1', text: '举手', digg_count: 3, create_time: 1754006400,
+      ip_label: 'IP属地:成都', reply_id: '0',
+      user: { sec_uid: 'MS4wBBB', nickname: '小明' },
+    },
+    {
+      cid: 'c2', text: '同求', reply_id: 'c1', reply_to_reply_id: '0',
+      user: { sec_uid: 'MS4wCCC', nickname: '小红' },
+    },
+  ],
+});
+
+group('解析抖音评论', () => {
+  const r = A.parseDouyin(
+    'https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=7311', dyComments, '');
+  eq(r.comments.length, 2, '两条');
+  const c = r.comments[0];
+  eq(c.comment_id, 'c1', '评论 id');
+  eq(c.note_id, '7311', '作品 id 从地址上取');
+  eq(c.level, '一级', 'reply_id 是 0 就是一级');
+  eq(c.ip_location, '成都', '属地');
+  eq(c.user_id, 'MS4wBBB', '只认 sec_uid');
+  eq(r.comments[1].level, '二级', '挂在别人下面的是二级');
+  eq(r.comments[1].parent_id, 'c1', '父评论');
+});
+
+// ---------- 发送节奏 ----------
+
+group('这一批怎么排', () => {
+  const gaps = A.Limits.plan(10, 20);
+  eq(gaps.length, 9, '十个人排九个间隔');
+  eq(gaps.reduce((a, b) => a + b, 0), 20 * 60, '加起来正好是设定的总时长');
+  ok(gaps.every((g) => g >= A.kMinGapSeconds), '每段都不短于最小间隔');
+  ok(new Set(gaps).size > 3, '长短要参差不齐，全一样就是机器 ' + gaps.join(','));
+
+  eq(A.Limits.plan(1, 20), [], '只有一个人不用等');
+  const tight = A.Limits.plan(60, 5);
+  ok(tight.every((g) => g === A.kMinGapSeconds),
+    '时间不够垫最小间隔就全按最小间隔，宁可超时也不连发');
+
+  A.Limits.batchSize = 20;
+  A.Limits.batchMinutes = 20;
+  ok(!A.Limits.tooFast(), '二十分钟发二十个是正常节奏');
+  A.Limits.batchMinutes = 5;
+  ok(A.Limits.tooFast(), '五分钟发二十个太快了要提醒');
+  A.Limits.batchMinutes = 20;
 });
 
 console.log('');

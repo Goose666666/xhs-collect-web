@@ -14,7 +14,7 @@ const path = require('path');
 const root = __dirname;
 const src = (f) => fs.readFileSync(path.join(root, 'src', f), 'utf8');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // 用户脚本的说明块。脚本管理器认的就是这一段。
 //
@@ -25,10 +25,11 @@ const META = `// ==UserScript==
 // @name         获客助手
 // @namespace    https://github.com/Goose666666/xhs-collect-web
 // @version      ${VERSION}
-// @description  在小红书页面里采集帖子和评论，挑出想找对象的人，生成能直接发的私信
+// @description  在小红书和抖音页面里采集帖子和评论，挑出想找对象的人，发私信和评论
 // @author       xhs-collect-web
 // @match        https://www.xiaohongshu.com/*
 // @match        https://xiaohongshu.com/*
+// @match        https://www.douyin.com/*
 // @run-at       document-start
 // @grant        none
 // @inject-into  page
@@ -41,14 +42,17 @@ const META = `// ==UserScript==
 const USER_FILES = [
   '10-util.js',
   '20-parse.js',
+  '22-douyin.js',
   '30-store.js',
   '40-industry.js',
   '45-limits.js',
   '50-funnel.js',
   '55-reply.js',
+  '56-poster.js',
   '58-csv.js',
   '60-hook.js',
   '70-engine.js',
+  '74-sender.js',
   '80-ui.js',
   '90-main.js',
 ];

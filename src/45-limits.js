@@ -87,3 +87,112 @@ const idleGiveUp = 4;
 // 按搜索那个次数放弃的话，每篇只能抓到最上面十几条，
 // 底下真正在应征的人全漏掉了。
 const commentGiveUp = 8;
+
+// ---------- 发送的节奏 ----------
+//
+// 采集只是看，发东西是留痕的。一天几十条加上一分钟连发，
+// 是被判成营销号最快的两条路，所以这几个数比一般人想的严得多。
+
+// 一批发几个人。
+const kBatchSizeDefault = 20;
+const kBatchSizeMin = 1;
+const kBatchSizeMax = 60;
+
+// 这一批用多少分钟发完。
+const kBatchMinutesDefault = 20;
+const kBatchMinutesMin = 5;
+const kBatchMinutesMax = 240;
+
+// 两条之间至少隔多少秒。
+//
+// 不是为了慢，是防止程序卡住或者页面秒开时瞬间连发好几条。
+// 真人再快也要看一眼再点。
+const kMinGapSeconds = 20;
+
+// 一天最多发几条评论。私信的上限按一批算，见 batchSize。
+const kCommentPerDay = 10;
+
+// 平均每条快到什么程度就该提醒一句。
+//
+// 比最小间隔宽一些。二十分钟发六十个平均二十秒，刚好压在最小间隔上，
+// 按最小间隔判的话它算合格，可那个速度已经不是人能做到的了。
+const kSaneGapSeconds = 30;
+
+Limits.batchSize = kBatchSizeDefault;
+Limits.batchMinutes = kBatchMinutesDefault;
+
+Limits.clampBatchSize = function (v) {
+  const n = asInt(v);
+  return n < kBatchSizeMin ? kBatchSizeMin : (n > kBatchSizeMax ? kBatchSizeMax : n);
+};
+
+Limits.clampBatchMinutes = function (v) {
+  const n = asInt(v);
+  return n < kBatchMinutesMin
+    ? kBatchMinutesMin
+    : (n > kBatchMinutesMax ? kBatchMinutesMax : n);
+};
+
+// 平均每条隔多少秒。用来告诉人这个组合快到什么程度。
+Limits.avgGapSeconds = function () {
+  return Limits.batchSize <= 1
+    ? 0
+    : Limits.batchMinutes * 60 / (Limits.batchSize - 1);
+};
+
+// 这个组合快不快过真人。
+//
+// 真快成这样也照发，只是把话说在前面。二十分钟发二十个是正常的，
+// 刷到一批合适的人集中发完就是这个节奏。
+Limits.tooFast = function () {
+  return Limits.batchSize > 1 && Limits.avgGapSeconds() < kSaneGapSeconds;
+};
+
+// 把这一批的时间随机切成若干段。
+//
+// 返回的是每条发送之前要等的秒数，第一条不等所以从第二条开始算，
+// 一共 n-1 段，加起来正好是设定的总时长。
+//
+// 切法是先给每段一个随机权重再按比例分，这样长短参差不齐。
+// 平均分再加个抖动的话，所有间隔都挤在平均值附近，
+// 那个规律性本身就是特征。
+Limits.plan = function (n, minutes) {
+  if (n <= 1) return [];
+  const total = (minutes === undefined ? Limits.batchMinutes : minutes) * 60;
+  const gaps = n - 1;
+
+  // 先垫上最小间隔，剩下的才拿去随机分
+  const floor = kMinGapSeconds * gaps;
+  const free = total - floor;
+  if (free <= 0) {
+    // 时间不够垫最小间隔，那就全按最小间隔来，宁可超时也不连发
+    return new Array(gaps).fill(kMinGapSeconds);
+  }
+
+  const w = [];
+  for (let i = 0; i < gaps; i++) w.push(Math.random() + 0.15);
+  const sum = w.reduce((a, b) => a + b, 0);
+  const out = [];
+  let used = 0;
+  for (let i = 0; i < gaps; i++) {
+    // 最后一段拿走剩下全部，免得取整之后总时长对不上
+    const extra = i === gaps - 1 ? free - used : Math.round(free * w[i] / sum);
+    used += extra;
+    out.push(kMinGapSeconds + extra);
+  }
+  return out;
+};
+
+Limits.loadBatch = async function () {
+  Limits.batchSize = Limits.clampBatchSize(
+    await getSetting('batch_size', kBatchSizeDefault));
+  Limits.batchMinutes = Limits.clampBatchMinutes(
+    await getSetting('batch_minutes', kBatchMinutesDefault));
+};
+
+Limits.saveBatch = async function (size, minutes) {
+  Limits.batchSize = Limits.clampBatchSize(size);
+  Limits.batchMinutes = Limits.clampBatchMinutes(minutes);
+  await setSetting('batch_size', Limits.batchSize);
+  await setSetting('batch_minutes', Limits.batchMinutes);
+};

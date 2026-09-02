@@ -102,9 +102,9 @@ function wantUrl(job) {
   if (job.phase === 'note') {
     const h = currentHit(job);
     if (!h) return '';
-    return buildNoteUrl(h.note_id, h.xsec_token, 'pc_search');
+    return noteUrlHere(h.note_id, h.xsec_token);
   }
-  return searchUrl(currentWord(job));
+  return searchUrlHere(currentWord(job));
 }
 
 // 现在这个页面是不是该干活的那个。
@@ -112,7 +112,19 @@ function onWantedPage(job) {
   const path = location.pathname;
   if (job.phase === 'note') {
     const h = currentHit(job);
-    return !!h && path.indexOf('/explore/' + h.note_id) === 0;
+    if (!h) return false;
+    // 小红书是 /explore/id，抖音是 /video/id
+    return path.indexOf('/explore/' + h.note_id) === 0 ||
+      path.indexOf('/video/' + h.note_id) === 0;
+  }
+  if (onDouyin()) {
+    // 抖音把关键词放在路径里，不是查询串里
+    if (path.indexOf('/search/') !== 0) return false;
+    let word = '';
+    try {
+      word = decodeURIComponent(path.slice('/search/'.length));
+    } catch (e) {}
+    return word === currentWord(job);
   }
   if (path.indexOf('/search_result') !== 0) return false;
   let kw = '';
@@ -191,7 +203,7 @@ async function readAWhile() {
 function drainNotes(bucket, seen, out, word) {
   let added = 0;
   for (const pack of Buckets.take(bucket)) {
-    const got = parseCaptured(pack.url, pack.body, word);
+    const got = parseHere(pack.url, pack.body, word);
     for (const n of got.notes) {
       if (!n.note_id || seen.has(n.note_id)) continue;
       seen.add(n.note_id);
@@ -205,7 +217,7 @@ function drainNotes(bucket, seen, out, word) {
 function drainComments(bucket, seen, out) {
   let added = 0;
   for (const pack of Buckets.take(bucket)) {
-    const got = parseCaptured(pack.url, pack.body, '');
+    const got = parseHere(pack.url, pack.body, '');
     const nid = noteIdInUrl(pack.url);
     for (const c of got.comments) {
       if (!c.comment_id || seen.has(c.comment_id)) continue;
@@ -263,8 +275,9 @@ async function stepSearch(job) {
   drainNotes('search', seen, rows, word);
 
   const hits = rows.slice(0, job.maxNotes)
-    // 小红书没有 token 打不开笔记，这种直接不要，免得白跑一趟
-    .filter((n) => n.note_id && n.xsec_token);
+    // 小红书没有 token 打不开笔记，这种直接不要，免得白跑一趟。
+    // 抖音压根不用 token，一律要求有 token 的话，抖音会一篇都采不到。
+    .filter((n) => n.note_id && (onDouyin() || n.xsec_token));
 
   const stats = Object.assign({}, job.stats);
   stats.total = estimateTotal(
@@ -330,14 +343,16 @@ async function stepNote(job) {
   const note = Object.assign({}, hit, detail[0]);
   note.keyword = word;
   note.xsec_token = note.xsec_token || hit.xsec_token;
-  note.note_url = note.note_url || buildNoteUrl(note.note_id, note.xsec_token, 'pc_search');
+  note.note_url = note.note_url || noteUrlHere(note.note_id, note.xsec_token);
 
   for (const c of comments) {
     if (!c.note_id) c.note_id = hit.note_id;
   }
 
-  const freshNotes = await saveNotes([note], word, '小红书', job.trade);
-  const freshComments = await saveComments(comments, '小红书', job.trade);
+  // 平台在这里定死，不留给后面去猜。以前是看 xsec_token 空不空反推，
+  // 重采一次把 token 覆盖没了，人就被判到另一个平台去了。
+  const freshNotes = await saveNotes([note], word, siteNow(), job.trade);
+  const freshComments = await saveComments(comments, siteNow(), job.trade);
   await nextNote(freshNotes, freshComments, head(note.title || note.content, 18));
 }
 
@@ -468,7 +483,8 @@ async function startCollect(opt) {
     log: [],
   });
   for (const w of words) await saveKeyword(w, opt.trade || Trade.now.key, true);
-  await drive();
+  // 起头就返回，理由同发送那边：这一轮要跑几十分钟，等在这儿没有意义
+  drive();
 }
 
 async function pauseCollect() {
