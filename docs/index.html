@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>获客助手</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>获客助手</h1>
+  <p>在自己的浏览器里采小红书的帖子和评论，挑出想找对象的人，生成能直接发的私信。Mac 和 iPhone 都能用。</p>
+  <nav>
+    <a href="index.html" class="on">安装</a>
+    <a href="viewer.html">看板</a>
+    <a href="https://github.com/Goose666666/xhs-collect-web">源码</a>
+  </nav>
+</header>
+
+<div class="btnrow">
+  <a class="btn" href="xhs-collect.user.js">安装脚本</a>
+  <button class="btn ghost" id="copy">复制脚本全文</button>
+</div>
+
+<h2>先装一个脚本管理器</h2>
+
+<p>浏览器本身没有采集能力，要靠脚本管理器把这个脚本挂到小红书页面上。三种搭配，挑一种就行。</p>
+
+<div class="card">
+  <h3>Mac 上用 Chrome</h3>
+  <ol>
+    <li>Chrome 应用商店搜 Tampermonkey，点添加至 Chrome。</li>
+    <li>回到这一页，点上面的安装脚本，Tampermonkey 会弹出安装页，点安装。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>Mac 上用 Safari</h3>
+  <ol>
+    <li>App Store 搜 Userscripts，免费，装上。</li>
+    <li>打开 Safari 的设置，扩展，把 Userscripts 勾上，权限选允许访问所有网站。</li>
+    <li>点一下地址栏左边的 Userscripts 图标，按提示选一个文件夹当脚本目录。</li>
+    <li>回到这一页点复制脚本全文，再在 Userscripts 里新建一个脚本，粘贴进去，保存。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>iPhone 和 iPad</h3>
+  <ol>
+    <li>App Store 搜 Userscripts，免费，装上。</li>
+    <li>打开系统设置，Safari，扩展，把 Userscripts 打开，权限选允许。</li>
+    <li>打开 Userscripts 这个 app，按提示选一个文件夹当脚本目录，选文件 app 里的任意一个新建文件夹都行。</li>
+    <li>用 Safari 打开这一页，点复制脚本全文。</li>
+    <li>回到 Safari，点地址栏左边的扩展图标，选 Userscripts，点加号新建脚本，粘贴，保存。</li>
+  </ol>
+</div>
+
+<div class="warn">
+  装完之后打开小红书，右下角应该出现一个红色的获客按钮。没出现就是脚本没生效，回到脚本管理器里确认这条脚本是打开状态。
+</div>
+
+<h2>怎么用</h2>
+
+<ol>
+  <li>用浏览器打开 <code>xiaohongshu.com</code>，用平时那个号登录。脚本不碰账号密码，登录是你自己在小红书页面上完成的。</li>
+  <li>点右下角的获客按钮。</li>
+  <li>选行业，勾几个关键词，填要采几篇、多少分钟采完。</li>
+  <li>点开始采集，然后让这个页面一直开着。</li>
+</ol>
+
+<p>采集期间页面会自己搜词、翻页、逐篇打开帖子，你能看见它在做什么，随时能暂停或者停止。中途关掉标签页也不会丢进度，下次打开小红书会接着上次那篇继续。</p>
+
+<h2>为什么这么慢</h2>
+
+<p>默认三十分钟采五十篇，平均半分钟一篇。这个速度是照着手机版定的，不是没优化。</p>
+
+<p>小红书识别批量行为看的是节奏，不是浏览器指纹。短时间内密集访问，轻的是接口开始返回空数据、弹出滑动验证，重的是账号直接被封。代价不对等：慢一点最多是一轮采集多花几小时，反正跑在后台；号一旦没了，登录态和后面所有的采集全部归零。</p>
+
+<p>想快可以把分钟数调小，但每篇之间最少也会隔三秒，那是页面渲染评论要的时间，再快抓回来全是空的。</p>
+
+<h2>手机上要注意</h2>
+
+<ul>
+  <li>Safari 切到后台或者锁屏之后会把页面挂起，采集跟着停。要采就让这个页面在前台开着，屏幕别熄。</li>
+  <li>一个词采三篇要四十分钟以上，八个词全勾要跑六到九小时，这活适合放在手机充电闲着的时候干。</li>
+  <li>iPhone 上导出的文件会存进文件 app，可以直接发给电脑。</li>
+</ul>
+
+<h2>数据在哪</h2>
+
+<p>全部存在这台设备的浏览器里，不上传任何服务器。这个网站本身是几个静态文件，没有后端，收不到你的数据。</p>
+
+<p>换设备或者要在电脑上看，走面板里的导出全部数据，得到一个 json 文件，在<a href="viewer.html">看板</a>里打开就能看，也可以在另一台设备的面板里导入，两边的数据会合到一起。</p>
+
+<p>导出的表格跟手机版 app 的字段完全一致，两边的数据能摞在一张表里。</p>
+
+<h2>面板里有什么</h2>
+
+<table>
+  <tr><th>采集</th><td>选词、定参数、看进度和日志</td></tr>
+  <tr><th>帖子</th><td>采到的帖子，按点赞排，点开看原帖</td></tr>
+  <tr><th>人</th><td>帖主和评论者一张名单，标了意向高低，每个人配一条私信话术</td></tr>
+  <tr><th>设置</th><td>导出、导入、清数据</td></tr>
+</table>
+
+<p>人这一页会先过一道筛选：广告号和同行剔掉，敏感内容剔掉，说过别联系的永久拉黑，剩下的按意向分高中低，无意向的不显示。名单上每个人下面那句话是照他自己写的要求生成的，里面的身高学历是套出来的，发之前要改成真人的条件。</p>
+
+<div class="warn">
+  私信一律手工发。面板只把话复制到剪贴板，跳不跳过去、发不发，你自己决定。自动群发是账号被封最快的一条路。
+</div>
+
+<footer>
+  这套东西跟手机版 app 用的是同一套接口和同一套判断规则，数据可以互相导入。
+</footer>
+
+</div>
+
+<script>
+document.getElementById('copy').addEventListener('click', async function () {
+  const btn = this;
+  btn.disabled = true;
+  try {
+    const text = await (await fetch('xhs-collect.user.js')).text();
+    await navigator.clipboard.writeText(text);
+    btn.textContent = '已复制，去粘贴';
+  } catch (e) {
+    btn.textContent = '复制不了，长按上面的安装脚本另存';
+  }
+  btn.disabled = false;
+});
+</script>
+
+</body>
+</html>

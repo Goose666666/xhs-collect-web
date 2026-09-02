@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>获客助手 看板</title>
+<link rel="stylesheet" href="assets/site.css">
+<style>
+  .drop {
+    border: 2px dashed var(--line);
+    border-radius: 14px;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text3);
+    margin-bottom: 18px;
+  }
+  .drop.over { border-color: var(--accent); color: var(--accent); }
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .pill {
+    padding: 6px 13px; border-radius: 15px; background: var(--card);
+    border: 1px solid var(--line); font-size: 14px; color: var(--text2);
+  }
+  .pill.high { background: var(--soft); color: var(--accent); border-color: transparent; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
+  .tabs button {
+    flex: 1; height: 44px; border-radius: 11px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text2); font-size: 15px; cursor: pointer;
+    font-family: inherit;
+  }
+  .tabs button.on { background: var(--accent); color: #fff; border-color: transparent; }
+  .tools { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tools input[type=text], .tools select {
+    height: 44px; padding: 0 12px; font-size: 15px; border: 1px solid var(--line);
+    border-radius: 11px; background: var(--card); color: var(--text);
+    font-family: inherit;
+  }
+  .tools input[type=text] { flex: 1; min-width: 160px; }
+  .said { margin: 0 0 10px; color: var(--text2); }
+  .talk {
+    background: var(--soft); border-radius: 10px; padding: 12px 14px;
+    margin: 0 0 12px; color: var(--text);
+  }
+  .who { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .who b { font-size: 16px; }
+  .mini { display: flex; gap: 10px; }
+  .mini button, .mini a {
+    flex: 1; height: 40px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text2); font-size: 14px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    text-decoration: none; font-family: inherit;
+  }
+  .empty { text-align: center; color: var(--text3); padding: 50px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>看板</h1>
+  <p>把面板里导出的 json 文件放进来，在这台设备上看数据、出话术、导表格。文件不会上传，网站没有后端。</p>
+  <nav>
+    <a href="index.html">安装</a>
+    <a href="viewer.html" class="on">看板</a>
+    <a href="https://github.com/Goose666666/xhs-collect-web">源码</a>
+  </nav>
+</header>
+
+<div class="drop" id="drop">
+  把 json 文件拖到这里，或者
+  <button class="btn ghost" id="pick" style="height:40px;margin-left:8px;">选文件</button>
+  <input type="file" id="file" accept=".json" hidden>
+</div>
+
+<div id="main" hidden>
+  <div class="stats" id="stats"></div>
+
+  <div class="tools">
+    <select id="trade"></select>
+    <select id="only">
+      <option value="">高和中都看</option>
+      <option value="high">只看高意向</option>
+    </select>
+    <input type="text" id="q" placeholder="搜昵称或者说过的话">
+  </div>
+
+  <div class="tabs">
+    <button data-tab="people" class="on">人</button>
+    <button data-tab="notes">帖子</button>
+  </div>
+
+  <div class="btnrow">
+    <button class="btn ghost" id="csvPeople">导出人名单</button>
+    <button class="btn ghost" id="csvNotes">导出帖子</button>
+  </div>
+
+  <div id="list"></div>
+</div>
+
+</div>
+
+<script src="assets/lib.js"></script>
+<script>
+(function () {
+  'use strict';
+  const X = window.XHS;
+  let data = null;
+  let people = [];
+  let notes = [];
+  let tab = 'people';
+
+  const $ = (id) => document.getElementById(id);
+
+  // 行业只影响判意向时多认哪几个词，跟数据本身无关
+  for (const i of X.allIndustries) {
+    const o = document.createElement('option');
+    o.value = i.key;
+    o.textContent = i.name;
+    $('trade').appendChild(o);
+  }
+
+  // ---------- 收文件 ----------
+
+  const drop = $('drop');
+  drop.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    drop.classList.add('over');
+  });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('over');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) readFile(f);
+  });
+  $('pick').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', () => {
+    const f = $('file').files && $('file').files[0];
+    if (f) readFile(f);
+  });
+
+  async function readFile(f) {
+    try {
+      data = JSON.parse(await f.text());
+    } catch (e) {
+      alert('这个文件读不了，要的是面板里导出的 json');
+      return;
+    }
+    build();
+  }
+
+  // ---------- 拼名单 ----------
+  //
+  // 跟面板里那份是同一套拼法：帖主取标题加正文，评论者取留言原文，
+  // 属地各取各的，这样两边看到的人是同一批。
+  function build() {
+    const t = (data && data.tables) || {};
+    notes = t.notes || [];
+    const comments = t.comments || [];
+    const byId = {};
+    for (const n of notes) byId[n.note_id] = n;
+
+    people = [];
+    for (const n of notes) {
+      if (!n.author_id) continue;
+      const title = X.asText(n.title);
+      const content = X.asText(n.content);
+      const said = content && title && content.indexOf(title) === 0
+        ? content : (title + ' ' + content).trim();
+      people.push({
+        kind: '帖主', user_id: n.author_id, nickname: n.author_name,
+        ip_location: n.ip_location, said: said, ts: n.publish_time,
+        likes: X.asInt(n.likes), note_id: n.note_id, note_title: title,
+        note_url: n.note_url, keyword: n.keyword, comment_id: '',
+        site: X.asSite(n.site), trade: X.asTrade(n.trade),
+      });
+    }
+    for (const c of comments) {
+      if (!c.user_id) continue;
+      const n = byId[c.note_id] || {};
+      people.push({
+        kind: '评论者', user_id: c.user_id, nickname: c.nickname,
+        ip_location: c.ip_location, said: X.asText(c.content), ts: c.comment_time,
+        likes: X.asInt(c.likes), note_id: c.note_id, note_title: X.asText(n.title),
+        note_url: n.note_url || '', keyword: X.asText(n.keyword),
+        comment_id: c.comment_id, site: X.asSite(c.site), trade: X.asTrade(c.trade),
+      });
+    }
+
+    // 拉黑过的人不再出现
+    const blocked = new Set();
+    for (const t2 of (t.touches || [])) {
+      if (t2.kind === '拉黑' && t2.user_id) blocked.add(t2.user_id);
+    }
+    window.__blocked = blocked;
+
+    $('main').hidden = false;
+    drop.style.display = 'none';
+    render();
+  }
+
+  // ---------- 画 ----------
+
+  function currentPeople() {
+    const key = $('trade').value;
+    X.Trade.now = X.industryOf(key);
+    const q = $('q').value.trim();
+    let rows = people.filter((p) => p.trade === key);
+    if (!rows.length) rows = people.slice();
+    if (q) {
+      rows = rows.filter((p) => X.asText(p.said).includes(q) ||
+        X.asText(p.nickname).includes(q));
+    }
+    rows.sort((a, b) => b.likes - a.likes);
+    return X.runFunnel(rows, {
+      blocked: window.__blocked || new Set(),
+      highOnly: $('only').value === 'high',
+    });
+  }
+
+  function render() {
+    const res = currentPeople();
+    const s = res.stat;
+    $('stats').innerHTML =
+      pill('帖子 ' + notes.length) + pill('人 ' + s.all) +
+      pill('高意向 ' + s.high, 'high') + pill('中等 ' + s.mid) +
+      pill('无意向 ' + s.low) + pill('广告或同行 ' + s.risky) +
+      pill('拉黑 ' + s.blocked);
+
+    const list = $('list');
+    list.innerHTML = '';
+    if (tab === 'notes') {
+      renderNotes(list);
+      return;
+    }
+    if (!res.keep.length) {
+      list.innerHTML = '<div class="empty">没有可联系的人</div>';
+      return;
+    }
+    for (const p of res.keep.slice(0, 400)) list.appendChild(personCard(p));
+  }
+
+  function pill(text, cls) {
+    return '<span class="pill ' + (cls || '') + '">' + X.esc(text) + '</span>';
+  }
+
+  function personCard(p) {
+    const talk = X.makeReply(p.said, p.user_id, p.ip_location);
+    const c = document.createElement('div');
+    c.className = 'card';
+    c.innerHTML =
+      '<div class="who"><b>' + X.esc(p.nickname || '无名') + '</b>' +
+      pill(p.intent, p.intent === X.INTENT_HIGH ? 'high' : '') +
+      pill(p.kind) + (p.ip_location ? pill(p.ip_location) : '') + '</div>' +
+      '<p class="said">' + X.esc(X.head(p.said, 160)) + '</p>' +
+      '<p class="talk">' + X.esc(talk) + '</p>' +
+      '<div class="mini">' +
+      '<button data-copy="1">复制话术</button>' +
+      '<a href="https://www.xiaohongshu.com/user/profile/' +
+      encodeURIComponent(p.user_id) + '" target="_blank" rel="noopener">去他主页</a>' +
+      (p.note_url ? '<a href="' + X.esc(p.note_url) +
+        '" target="_blank" rel="noopener">看原帖</a>' : '') +
+      '</div>';
+    c.querySelector('[data-copy]').addEventListener('click', async function () {
+      try {
+        await navigator.clipboard.writeText(talk);
+        this.textContent = '已复制';
+      } catch (e) {
+        this.textContent = '复制不了，手动选中';
+      }
+    });
+    return c;
+  }
+
+  function renderNotes(list) {
+    const rows = notes.slice().sort((a, b) => X.asInt(b.likes) - X.asInt(a.likes));
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">没有帖子</div>';
+      return;
+    }
+    for (const n of rows.slice(0, 400)) {
+      const c = document.createElement('div');
+      c.className = 'card';
+      c.innerHTML =
+        '<div class="who"><b>' + X.esc(n.title || X.head(n.content, 26) || '无标题') +
+        '</b></div>' +
+        '<div class="stats">' + pill(X.asText(n.author_name)) +
+        pill('赞 ' + X.asInt(n.likes)) + pill('评论 ' + X.asInt(n.comment_cnt)) +
+        (n.ip_location ? pill(n.ip_location) : '') +
+        (n.keyword ? pill(n.keyword) : '') + '</div>' +
+        '<p class="said">' + X.esc(X.head(n.content, 160)) + '</p>' +
+        (n.note_url ? '<div class="mini"><a href="' + X.esc(n.note_url) +
+          '" target="_blank" rel="noopener">打开原帖</a></div>' : '');
+      list.appendChild(c);
+    }
+  }
+
+  // ---------- 交互 ----------
+
+  for (const b of document.querySelectorAll('.tabs button')) {
+    b.addEventListener('click', () => {
+      tab = b.dataset.tab;
+      for (const o of document.querySelectorAll('.tabs button')) {
+        o.classList.toggle('on', o === b);
+      }
+      render();
+    });
+  }
+  for (const id of ['trade', 'only']) {
+    $(id).addEventListener('change', render);
+  }
+  $('q').addEventListener('input', render);
+
+  $('csvPeople').addEventListener('click', () => {
+    X.download('人_' + X.todayCst() + '.csv', X.peopleCsv(currentPeople().keep), 'text/csv');
+  });
+  $('csvNotes').addEventListener('click', () => {
+    X.download('帖子_' + X.todayCst() + '.csv', X.notesCsv(notes), 'text/csv');
+  });
+})();
+</script>
+
+</body>
+</html>
