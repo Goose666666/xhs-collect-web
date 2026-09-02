@@ -24,6 +24,12 @@
   <button class="btn ghost" id="copy">复制脚本全文</button>
 </div>
 
+<div id="rawbox" hidden>
+  <textarea id="raw" readonly style="width:100%;height:180px;font-family:ui-monospace,
+    Menlo,Consolas,monospace;font-size:12px;border:1px solid var(--line);
+    border-radius:12px;padding:12px;background:var(--card);color:var(--text2);"></textarea>
+</div>
+
 <h2>先装一个脚本管理器</h2>
 
 <p>浏览器本身没有采集能力，要靠脚本管理器把这个脚本挂到小红书页面上。三种搭配，挑一种就行。</p>
@@ -42,7 +48,7 @@
     <li>App Store 搜 Userscripts，免费，装上。</li>
     <li>打开 Safari 的设置，扩展，把 Userscripts 勾上，权限选允许访问所有网站。</li>
     <li>点一下地址栏左边的 Userscripts 图标，按提示选一个文件夹当脚本目录。</li>
-    <li>回到这一页点复制脚本全文，再在 Userscripts 里新建一个脚本，粘贴进去，保存。</li>
+    <li>回到这一页，右键点安装脚本，选下载链接文件，把下载到的 xhs-collect.user.js 拖进刚才那个文件夹。</li>
   </ol>
 </div>
 
@@ -51,10 +57,11 @@
   <ol>
     <li>App Store 搜 Userscripts，免费，装上。</li>
     <li>打开系统设置，Safari，扩展，把 Userscripts 打开，权限选允许。</li>
-    <li>打开 Userscripts 这个 app，按提示选一个文件夹当脚本目录，选文件 app 里的任意一个新建文件夹都行。</li>
-    <li>用 Safari 打开这一页，点复制脚本全文。</li>
-    <li>回到 Safari，点地址栏左边的扩展图标，选 Userscripts，点加号新建脚本，粘贴，保存。</li>
+    <li>打开 Userscripts 这个 app，按提示选一个文件夹当脚本目录，在文件 app 里新建一个就行。</li>
+    <li>用 Safari 打开这一页，长按上面的安装脚本，选下载链接文件。</li>
+    <li>打开文件 app，把下载里的 xhs-collect.user.js 移到第三步那个文件夹。</li>
   </ol>
+  <p>移不过去就退回来点复制脚本全文，再到 Userscripts 里新建一个脚本粘贴保存，效果一样。</p>
 </div>
 
 <div class="warn">
@@ -118,17 +125,62 @@
 </div>
 
 <script>
-document.getElementById('copy').addEventListener('click', async function () {
-  const btn = this;
-  btn.disabled = true;
+// 脚本正文提前取好放着。
+//
+// Safari 只认在点击那一刻同步发生的复制。先 await 一次网络请求再去写剪贴板，
+// 手势的授权窗口已经过了，写进去会被拒，表现是点了没反应。
+var scriptText = '';
+fetch('xhs-collect.user.js').then(function (r) {
+  return r.text();
+}).then(function (t) {
+  scriptText = t;
+  document.getElementById('raw').value = t;
+});
+
+// 老办法，整个过程是同步的，iPhone 上的 Safari 只吃这一套。
+function copyNow(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.contentEditable = 'true';
+  ta.readOnly = false;
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+  document.body.appendChild(ta);
+  var okSel = false;
   try {
-    const text = await (await fetch('xhs-collect.user.js')).text();
-    await navigator.clipboard.writeText(text);
-    btn.textContent = '已复制，去粘贴';
-  } catch (e) {
-    btn.textContent = '复制不了，长按上面的安装脚本另存';
+    var range = document.createRange();
+    range.selectNodeContents(ta);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    ta.setSelectionRange(0, text.length);
+    okSel = document.execCommand('copy');
+  } catch (e) {}
+  ta.remove();
+  return okSel;
+}
+
+document.getElementById('copy').addEventListener('click', function () {
+  var btn = this;
+  if (!scriptText) {
+    btn.textContent = '还没下载完，等一下再点';
+    return;
   }
-  btn.disabled = false;
+  if (copyNow(scriptText)) {
+    btn.textContent = '已复制，去粘贴';
+    return;
+  }
+  // 这条路要网站有剪贴板权限，没有就把正文摊开让人自己选
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(scriptText).then(function () {
+      btn.textContent = '已复制，去粘贴';
+    }, function () {
+      document.getElementById('rawbox').hidden = false;
+      btn.textContent = '自己全选复制下面那段';
+    });
+    return;
+  }
+  document.getElementById('rawbox').hidden = false;
+  btn.textContent = '自己全选复制下面那段';
 });
 </script>
 
