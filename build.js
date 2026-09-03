@@ -14,7 +14,7 @@ const path = require('path');
 const root = __dirname;
 const src = (f) => fs.readFileSync(path.join(root, 'src', f), 'utf8');
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 
 // 用户脚本的说明块。脚本管理器认的就是这一段。
 //

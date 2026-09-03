@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         获客助手
 // @namespace    https://github.com/Goose666666/xhs-collect-web
-// @version      1.3.0
+// @version      1.3.1
 // @description  在小红书和抖音页面里采集帖子和评论，挑出想找对象的人，发私信和评论
 // @author       xhs-collect-web
 // @match        https://www.xiaohongshu.com/*
@@ -5368,8 +5368,14 @@ async function launchComment(notes) {
     say('先去设置里写几条评论话术');
     return;
   }
-  const list = notes.map((p) => Object.assign({}, p, {
-    text: talks[Math.floor(Math.random() * talks.length)],
+  // 话术轮着用，不是每篇现挑一句。
+  //
+  // 每篇现挑的话，连着几篇挑中同一句的概率不低，而一模一样的评论
+  // 出现在几十篇帖子底下，一眼就是机器。轮着来保证相邻两篇一定不同。
+  // 起点每批随机，不然每批都从同一句开始。
+  const from = Math.floor(Math.random() * 97);
+  const list = notes.map((p, i) => Object.assign({}, p, {
+    text: talks[(from + i) % talks.length],
     // 只在帖子底下发新评论，不去回复某个人。
     // 回复某个人要在几百条评论里把他找出来，很容易找错。
     nickname: '',
