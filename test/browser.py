@@ -570,6 +570,94 @@ def main():
         check('重庆女生找对象' in v.inner_text('#list'), '看板的帖子页')
         check(not verrs, '看板没有报错 ' + str(verrs))
 
+        # ---------- 控制台 ----------
+        #
+        # 控制台自己什么都干不了，它开一个小红书标签页，指令发过去、
+        # 数据要回来。这条路必须真开两个页面跑一遍，光测函数说明不了问题。
+        print('控制台')
+        ctx = b.new_context(viewport={'width': 1280, 'height': 900})
+        # 弹出来那个标签页也要装上脚本，所以挂在上下文上而不是单页上
+        ctx.add_init_script(script)
+        cerrs2 = []
+        con = ctx.new_page()
+        con.on('pageerror', lambda e: cerrs2.append(str(e)))
+        con.goto(base + '/docs/console.html?work=' + base + '/fake')
+        check('控制台' in con.inner_text('h1'), '控制台标题')
+        check('还没连上' in con.inner_text('#link'), '一开始是没连上')
+
+        with con.expect_popup() as pi:
+            con.click('#open')
+        work = pi.value
+        work.wait_for_load_state()
+        work.wait_for_selector('.xhsc-fab', timeout=8000)
+        check(True, '小红书那一页开出来了')
+        work.evaluate("""async () => {
+          await window.__xhs.importAll(%s);
+        }""" % json.dumps(EXPORT, ensure_ascii=False))
+
+        con.wait_for_function(
+            "() => document.querySelector('#link').textContent.indexOf('已连上') >= 0",
+            timeout=15000)
+        check('已连上' in con.inner_text('#link'), '控制台连上那一页了')
+        check(con.locator('#main').is_visible(), '连上之后才摆出正文')
+        check('已登录' in con.inner_text('#login'), '登录状态也报回来了')
+        check('小红书' in con.inner_text('#site'), '在哪个平台也报回来了')
+
+        con.wait_for_timeout(600)
+        check(con.locator('#pane-collect .chip').count() >= 8, '关键词是那边给的')
+
+        con.click('.tabs button[data-tab=notes]')
+        con.wait_for_timeout(1200)
+        check('重庆女生找对象' in con.inner_text('#pane-notes'), '帖子是那边给的')
+        con.locator('#pane-notes button', has_text='看评论').first.click()
+        con.wait_for_timeout(2500)
+        cm_text = con.inner_text('#pane-notes')
+        check('举手' in cm_text, '评论也拿得到 ' + cm_text[:80].replace('\n', ' '))
+        check(con.locator('#pane-notes .pill.he').count() >= 1, '评论标了男女')
+
+        con.click('.tabs button[data-tab=people]')
+        con.wait_for_timeout(1200)
+        ptext = con.inner_text('#pane-people')
+        check('小明' in ptext, '人名单是那边给的')
+        check('推广号' not in ptext, '广告号在那边就被漏斗剔掉了')
+        check('可以联系下吗' in ptext or '185' in ptext, '话术也一并带回来了')
+
+        con.click('.tabs button[data-tab=sent]')
+        con.wait_for_timeout(1200)
+        check('还没发过私信' in con.inner_text('#pane-sent'), '私信记录')
+
+        con.click('.tabs button[data-tab=setting]')
+        con.wait_for_timeout(1200)
+        stext = con.inner_text('#pane-setting')
+        check('帖子 1' in stext, '设置页报了库里有多少 ' + stext[:60])
+        check(con.locator('#pane-setting textarea').count() == 3, '话术也摆出来了')
+
+        print('控制台改设置能落到那一页')
+        con.select_option('#pane-setting select', 'beauty')
+        con.wait_for_timeout(1500)
+        now = work.evaluate("() => window.__xhs.Trade.now.key")
+        check(now == 'beauty', '控制台换行业，那一页真换了 ' + str(now))
+        con.select_option('#pane-setting select', 'love')
+        con.wait_for_timeout(1200)
+
+        print('控制台只认自己这个来路')
+        # 不校验来路的话，任何一个网页都能开一个小红书标签页，
+        # 然后指挥它拿数据、发私信，那等于把账号交出去了
+        okOrigins = work.evaluate("""() => ({
+          site: window.__xhs.allowedConsole('https://goose666666.github.io'),
+          evil: window.__xhs.allowedConsole('https://evil.com'),
+          lookalike: window.__xhs.allowedConsole('https://goose666666.github.io.evil.com'),
+          prefix: window.__xhs.allowedConsole('https://xgoose666666.github.io'),
+          xhs: window.__xhs.allowedConsole('https://www.xiaohongshu.com'),
+        })""")
+        check(okOrigins['site'] is True, '自己那个站认')
+        check(okOrigins['evil'] is False, '别的站不认')
+        check(okOrigins['lookalike'] is False, '拿站名当前缀的域名不认 ')
+        check(okOrigins['prefix'] is False, '前面加字的域名不认')
+        check(okOrigins['xhs'] is False, '平台自己也不算控制台')
+        check(not cerrs2, '控制台没有报错 ' + str(cerrs2))
+        ctx.close()
+
         print('安装页')
         i = b.new_page()
         ierrs = []

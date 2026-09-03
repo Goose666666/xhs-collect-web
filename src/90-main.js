@@ -4,15 +4,39 @@
 // 界面得等 body 出来才能挂，所以分两步。
 
 installHooks();
+// 控制台随时可能来问，监听要在最早就装上，不能等界面画完
+installBridge();
+
+// 在不在平台自己的页面上。
+//
+// 脚本管理器有时候会把脚本也塞进空白页和跳转中转页，那些地方没有库也没有
+// 内容，照常往下跑只会抛一串错。
+function onPlatform() {
+  const h = location.hostname || '';
+  return h.indexOf('xiaohongshu.com') >= 0 || h.indexOf('douyin.com') >= 0;
+}
 
 async function boot() {
   // 采集和发送都是靠跳页面推进的，页面每跳一次这里就重来一次，
   // 所以这几步必须便宜且可以重复做。
-  await Trade.load();
-  await Limits.load();
-  await Limits.loadBatch();
-  Runtime.job = (await getJob()) || null;
-  Sender.job = (await getSendJob()) || null;
+  try {
+    await Trade.load();
+    await Limits.load();
+    await Limits.loadBatch();
+    Runtime.job = (await getJob()) || null;
+    Sender.job = (await getSendJob()) || null;
+  } catch (e) {
+    // 库开不了。无痕模式、空白页、以及浏览器设了禁止网站存数据时都是这样。
+    // 不在平台页面上就安静退出；在的话得把话说清楚，
+    // 不然界面一片空白，谁也不知道是坏了还是没装上。
+    if (!onPlatform()) return;
+    UI.dbError = asText(e && e.message ? e.message : e);
+    try {
+      mountPanel();
+      togglePanel(true);
+    } catch (e2) {}
+    return;
+  }
 
   mountPanel();
 
@@ -85,6 +109,8 @@ window.__xhs = {
   Limits: Limits,
   Trade: Trade,
   hookInstalled: hookInstalled,
+  allowedConsole: allowedConsole,
+  bridgeStatus: bridgeStatus,
   exportAll: exportAll,
   importAll: importAll,
   listPeople: listPeople,

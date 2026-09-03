@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>获客助手 控制台</title>
+<link rel="stylesheet" href="assets/site.css">
+<style>
+  .bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 18px; }
+  .dot { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px;
+    border-radius: 16px; background: var(--card); border: 1px solid var(--line);
+    font-size: 14px; color: var(--text2); }
+  .dot i { width: 8px; height: 8px; border-radius: 4px; background: #c9c9cf;
+    display: block; }
+  .dot.on i { background: #3fa06a; }
+  .dot.off i { background: #d0524a; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tabs button { flex: 1; min-width: 88px; height: 44px; border-radius: 11px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text2);
+    font-size: 15px; cursor: pointer; font-family: inherit; }
+  .tabs button.on { background: var(--accent); color: #fff; border-color: transparent; }
+  .pane { display: none; }
+  .pane.on { display: block; }
+  .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .row > label { width: 130px; flex: none; font-size: 15px; color: var(--text2); }
+  input[type=text], input[type=number], select, textarea {
+    flex: 1; min-width: 0; height: 46px; padding: 0 13px; font-size: 15px;
+    border: 1px solid var(--line); border-radius: 11px; background: var(--card);
+    color: var(--text); font-family: inherit; }
+  textarea { height: 74px; padding: 11px 13px; line-height: 1.6; }
+  input[type=checkbox] { width: 22px; height: 22px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .chip { padding: 9px 14px; border-radius: 17px; background: var(--card);
+    border: 1px solid var(--line); font-size: 14px; cursor: pointer;
+    color: var(--text2); }
+  .chip.on { background: var(--soft); color: var(--accent); border-color: transparent;
+    font-weight: 600; }
+  .prog { height: 8px; border-radius: 4px; background: var(--line);
+    overflow: hidden; margin: 14px 0 10px; }
+  .prog i { display: block; height: 100%; background: var(--accent); width: 0; }
+  .log { background: var(--card); border: 1px solid var(--line); border-radius: 11px;
+    padding: 12px; font-size: 12.5px; line-height: 1.75; color: var(--text3);
+    max-height: 240px; overflow-y: auto; white-space: pre-wrap;
+    font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: 14px; }
+  .pill { padding: 5px 11px; border-radius: 14px; background: var(--card);
+    border: 1px solid var(--line); font-size: 13px; color: var(--text2); }
+  .pill.high { background: var(--soft); color: var(--accent); border-color: transparent; }
+  .pill.he { background: rgba(63,114,184,.12); color: #3f72b8; border-color: transparent; }
+  .pill.she { background: rgba(200,90,134,.12); color: #c85a86; border-color: transparent; }
+  .who { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    margin-bottom: 8px; }
+  .who b { font-size: 16px; }
+  .said { margin: 0 0 10px; color: var(--text2); }
+  .talk { background: var(--soft); border-radius: 10px; padding: 12px 14px;
+    margin: 0 0 12px; color: var(--text); }
+  .mini { display: flex; gap: 10px; }
+  .mini button { flex: 1; height: 40px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text2);
+    font-size: 14px; cursor: pointer; font-family: inherit; }
+  .empty { text-align: center; color: var(--text3); padding: 50px 0; }
+  .big { background: var(--soft); color: var(--accent); border-radius: 12px;
+    padding: 16px; font-size: 16px; font-weight: 600; line-height: 1.7;
+    margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>控制台</h1>
+  <p>在这儿登录、采集、发私信。活儿跑在它开出来的那个小红书标签页里，那一页别关。</p>
+  <nav>
+    <a href="index.html">安装</a>
+    <a href="console.html" class="on">控制台</a>
+    <a href="viewer.html">看板</a>
+    <a href="https://github.com/Goose666666/xhs-collect-web">源码</a>
+  </nav>
+</header>
+
+<div class="bar">
+  <button class="btn" id="open">打开小红书</button>
+  <span class="dot" id="link"><i></i><span>还没连上</span></span>
+  <span class="dot" id="login" hidden><i></i><span>登录状态</span></span>
+  <span class="dot" id="site" hidden><i></i><span></span></span>
+</div>
+
+<div id="phone" class="warn" hidden>
+  手机上别用这一页。Safari 一切走标签页就把后台那页挂起，采集跟着停。
+  手机上直接在小红书页面里点右下角那个获客按钮，面板跟这一页是同一套东西。
+</div>
+
+<div id="hint" class="card">
+  <h3>怎么用</h3>
+  <ol>
+    <li>先按<a href="index.html">安装页</a>把脚本装上。</li>
+    <li>点上面的打开小红书，在弹出来那个标签页里用平时那个号登录。</li>
+    <li>回到这一页，上面会显示已连上，然后就在这儿选词开跑。</li>
+  </ol>
+</div>
+
+<div id="main" hidden>
+  <div class="tabs">
+    <button data-tab="collect" class="on">采集</button>
+    <button data-tab="notes">帖子</button>
+    <button data-tab="people">人</button>
+    <button data-tab="sent">私信</button>
+    <button data-tab="setting">设置</button>
+  </div>
+
+  <div class="pane on" id="pane-collect"></div>
+  <div class="pane" id="pane-notes"></div>
+  <div class="pane" id="pane-people"></div>
+  <div class="pane" id="pane-sent"></div>
+  <div class="pane" id="pane-setting"></div>
+</div>
+
+</div>
+
+<script src="assets/lib.js"></script>
+<script>
+(function () {
+  'use strict';
+  const X = window.XHS;
+  const $ = (id) => document.getElementById(id);
+
+  // 干活那个标签页。给它起个名字，来回点打开也只会有一个。
+  const WORK = 'xhs-work';
+
+  // 本地调试时可以指定开哪个地址。
+  //
+  // 只在 127.0.0.1 上认这个参数，真站点上一律开小红书。
+  // 不然给人发一条带假地址的链接，就能把这个控制台指到别的站上去。
+  const local = /^https?:\/\/(127\.0\.0\.1|localhost)(:|$)/.test(location.origin);
+  let HOME = 'https://www.xiaohongshu.com/explore';
+  // 它可能停在小红书也可能停在抖音，两个来路都发一遍
+  const TARGETS = ['https://www.xiaohongshu.com', 'https://www.douyin.com'];
+  if (local) {
+    try {
+      const q = new URLSearchParams(location.search).get('work');
+      if (q && q.indexOf(location.origin) === 0) {
+        HOME = q;
+        TARGETS.push(location.origin);
+      }
+    } catch (e) {}
+  }
+
+  let win = null;
+  let seq = 0;
+  const waiting = {};
+  let status = null;
+  let tab = 'collect';
+  let picked = new Set();
+
+  window.addEventListener('message', function (ev) {
+    const d = ev.data;
+    if (!d || d.__xhsc !== 'answer') return;
+    const fn = waiting[d.id];
+    if (!fn) return;
+    delete waiting[d.id];
+    fn(d.data);
+  });
+
+  // 问那边要点什么。那边没人应答就返回空，不挂着。
+  function ask(what, extra, ms) {
+    return new Promise(function (resolve) {
+      if (!win || win.closed) {
+        resolve(null);
+        return;
+      }
+      const id = ++seq;
+      waiting[id] = resolve;
+      const msg = Object.assign({ __xhsc: 'ask', id: id, what: what }, extra || {});
+      for (const t of TARGETS) {
+        try { win.postMessage(msg, t); } catch (e) {}
+      }
+      setTimeout(function () {
+        if (waiting[id]) {
+          delete waiting[id];
+          resolve(null);
+        }
+      }, ms || 5000);
+    });
+  }
+
+  // 手机上一切走标签页后台那页就被挂起，这一页在手机上没法用
+  if (/iPhone|iPad|Android/i.test(navigator.userAgent)) $('phone').hidden = false;
+
+  $('open').addEventListener('click', async function () {
+    // 已经开过就只是切过去，不要再导航一次，那会打断正在跑的采集
+    win = window.open('', WORK);
+    if (!win) {
+      alert('浏览器拦了弹窗，允许一下再点');
+      return;
+    }
+    const got = await ask('status', {}, 2500);
+    if (!got) {
+      // 那边还不是小红书，或者根本是新开的空页，导航过去
+      try { win.location = HOME; } catch (e) { win = window.open(HOME, WORK); }
+    }
+    win.focus();
+    tick();
+  });
+
+  // ---------- 连接和状态 ----------
+
+  function setDot(el, on, text) {
+    el.hidden = false;
+    el.className = 'dot ' + (on ? 'on' : 'off');
+    el.lastElementChild.textContent = text;
+  }
+
+  async function tick() {
+    const got = await ask('status', {}, 4000);
+    status = got;
+    if (!got) {
+      $('link').className = 'dot off';
+      $('link').lastElementChild.textContent = win ? '那一页还没就绪' : '还没连上';
+      $('login').hidden = true;
+      $('site').hidden = true;
+      $('main').hidden = true;
+      $('hint').hidden = false;
+      return;
+    }
+    setDot($('link'), true, '已连上');
+    setDot($('login'), got.loggedIn, got.loggedIn ? '已登录' : '要登录');
+    setDot($('site'), true, got.site);
+    const first = $('main').hidden;
+    $('hint').hidden = true;
+    $('main').hidden = false;
+    // 第一次连上要把当前这一页画出来，之后只刷正在动的那块
+    if (first) render();
+    else refresh();
+  }
+
+  setInterval(function () {
+    if (win && !win.closed) tick();
+  }, 3000);
+
+  // ---------- 画 ----------
+
+  for (const b of document.querySelectorAll('.tabs button')) {
+    b.addEventListener('click', function () {
+      tab = b.dataset.tab;
+      if (tab !== 'notes') openNote = null;
+      for (const o of document.querySelectorAll('.tabs button')) {
+        o.classList.toggle('on', o === b);
+      }
+      for (const p of document.querySelectorAll('.pane')) {
+        p.classList.toggle('on', p.id === 'pane-' + tab);
+      }
+      render();
+    });
+  }
+
+  // 切页签和点按钮时整块重画。
+  function render() {
+    if (!status) return;
+    if (tab === 'collect') renderCollect();
+    else if (tab === 'notes') renderNotes();
+    else if (tab === 'people') renderPeople();
+    else if (tab === 'sent') renderSent();
+    else renderSetting();
+  }
+
+  // 每隔几秒来一次的那种重画。
+  //
+  // 只画正在动的那一块。列表整块重画的话，三秒一次把滚动位置顶回顶上，
+  // 翻到一半的名单根本看不下去；看评论那一屏也会被列表盖掉。
+  function refresh() {
+    if (!status) return;
+    if (tab === 'collect') renderCollect();
+    else if (tab === 'people' && status.send.running) renderPeople();
+  }
+
+  function el(tag, cls, html) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html !== undefined) e.innerHTML = html;
+    return e;
+  }
+
+  function pill(text, cls) {
+    return '<span class="pill ' + (cls || '') + '">' + X.esc(text) + '</span>';
+  }
+
+  // ---------- 采集 ----------
+
+  function renderCollect() {
+    const p = $('pane-collect');
+    const c = status.collect;
+    p.innerHTML = '';
+
+    if (c.running) {
+      p.appendChild(el('div', '', '<b>第 ' + (c.wi + 1) + '/' + c.words +
+        ' 个词 ' + X.esc(c.word) + '</b>'));
+      const bar = el('div', 'prog', '<i></i>');
+      const done = X.asInt(c.stats.done);
+      const total = X.asInt(c.stats.total);
+      bar.firstChild.style.width =
+        (total > 0 ? Math.round(Math.min(1, done / total) * 100) : 0) + '%';
+      p.appendChild(bar);
+      p.appendChild(el('p', '', X.esc(c.message)));
+      p.appendChild(el('p', '', '已存 ' + X.asInt(c.stats.notes) + ' 篇，评论 ' +
+        X.asInt(c.stats.comments) + ' 条'));
+      const btns = el('div', 'btnrow');
+      const pause = el('button', 'btn ghost', c.paused ? '继续' : '暂停');
+      pause.addEventListener('click', async function () {
+        await ask(c.paused ? 'resumeCollect' : 'pauseCollect');
+        tick();
+      });
+      const stop = el('button', 'btn', '停止');
+      stop.addEventListener('click', async function () {
+        await ask('stopCollect');
+        tick();
+      });
+      btns.appendChild(pause);
+      btns.appendChild(stop);
+      p.appendChild(btns);
+      if (c.log.length) p.appendChild(el('div', 'log', X.esc(c.log.join('\n'))));
+      return;
+    }
+
+    const chips = el('div', 'chips');
+    const words = status.keywords.slice();
+    for (const w of picked) {
+      if (words.indexOf(w) < 0) words.push(w);
+    }
+    for (const w of words) {
+      const ch = el('div', 'chip' + (picked.has(w) ? ' on' : ''), X.esc(w));
+      ch.addEventListener('click', function () {
+        if (picked.has(w)) picked.delete(w);
+        else picked.add(w);
+        renderCollect();
+      });
+      chips.appendChild(ch);
+    }
+    p.appendChild(chips);
+
+    const addRow = el('div', 'row');
+    const add = el('input');
+    add.type = 'text';
+    add.placeholder = '自己加一个词';
+    const addBtn = el('button', 'btn ghost', '加上');
+    const doAdd = function () {
+      const v = add.value.trim();
+      if (!v) return;
+      picked.add(v);
+      add.value = '';
+      renderCollect();
+    };
+    addBtn.addEventListener('click', doAdd);
+    add.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') doAdd();
+    });
+    addRow.appendChild(add);
+    addRow.appendChild(addBtn);
+    p.appendChild(addRow);
+
+    const num = function (label, value) {
+      const r = el('div', 'row', '<label>' + label + '</label>');
+      const i = el('input');
+      i.type = 'number';
+      i.value = value;
+      r.appendChild(i);
+      p.appendChild(r);
+      return i;
+    };
+    const nNotes = num('采几篇', status.crawlSize);
+    const nMin = num('多少分钟采完', status.crawlMinutes);
+    const nCmt = num('每篇评论', 60);
+
+    const onlyRow = el('div', 'row', '<label>只要帖主</label>');
+    const only = el('input');
+    only.type = 'checkbox';
+    onlyRow.appendChild(only);
+    onlyRow.appendChild(el('div'));
+    p.appendChild(onlyRow);
+
+    const btns = el('div', 'btnrow');
+    const go = el('button', 'btn', '开始采集');
+    go.addEventListener('click', async function () {
+      if (!picked.size) {
+        alert('先选一个关键词');
+        return;
+      }
+      if (!status.loggedIn) {
+        alert('那一页还没登录，先去登录');
+        return;
+      }
+      go.disabled = true;
+      await ask('limits', {
+        crawlSize: nNotes.value, crawlMinutes: nMin.value,
+        batchSize: status.batchSize, batchMinutes: status.batchMinutes,
+      });
+      await ask('startCollect', {
+        keywords: [...picked],
+        maxNotes: X.asInt(nNotes.value),
+        maxComments: X.asInt(nCmt.value),
+        onlyOwner: only.checked,
+      });
+      tick();
+    });
+    btns.appendChild(go);
+    p.appendChild(btns);
+    if (c.message) p.appendChild(el('p', '', X.esc(c.message)));
+    if (c.log.length) p.appendChild(el('div', 'log', X.esc(c.log.join('\n'))));
+  }
+
+  // ---------- 帖子 ----------
+
+  let notesCache = null;
+  // 帖子页正在看哪一篇的评论。空的时候看的是列表。
+  let openNote = null;
+  let commentsCache = null;
+
+  async function renderNotes() {
+    if (openNote) {
+      await showComments(openNote);
+      return;
+    }
+    const p = $('pane-notes');
+    if (!notesCache) {
+      p.innerHTML = '<div class="empty">读取中</div>';
+      notesCache = await ask('notes', {}, 8000);
+      if (!notesCache) {
+        p.innerHTML = '<div class="empty">那一页没应答</div>';
+        return;
+      }
+    }
+    p.innerHTML = '';
+    const rows = notesCache.rows || [];
+    if (!rows.length) {
+      p.innerHTML = '<div class="empty">还没有采到帖子</div>';
+      return;
+    }
+    for (const n of rows) {
+      const card = el('div', 'card');
+      card.appendChild(el('div', 'who', '<b>' +
+        X.esc(n.title || X.head(n.content, 26) || '无标题') + '</b>'));
+      card.appendChild(el('div', 'who',
+        pill(n.author_name) + pill('赞 ' + X.asInt(n.likes)) +
+        pill('评论 ' + X.asInt(n.comment_cnt)) +
+        (n.ip_location ? pill(n.ip_location) : '') +
+        (n.keyword ? pill(n.keyword, 'high') : '')));
+      card.appendChild(el('p', 'said', X.esc(X.head(n.content, 140))));
+      const mini = el('div', 'mini');
+      const look = el('button', '', '看评论');
+      look.addEventListener('click', function () {
+        openNote = n.note_id;
+        commentsCache = null;
+        showComments(n.note_id);
+      });
+      mini.appendChild(look);
+      card.appendChild(mini);
+      p.appendChild(card);
+    }
+  }
+
+  async function showComments(noteId) {
+    const p = $('pane-notes');
+    if (!commentsCache || commentsCache.id !== noteId) {
+      p.innerHTML = '<div class="empty">读取中</div>';
+      const one = await ask('comments', { noteId: noteId }, 8000);
+      commentsCache = { id: noteId, data: one };
+    }
+    const got = commentsCache.data;
+    p.innerHTML = '';
+    const back = el('button', 'btn ghost', '返回');
+    back.addEventListener('click', function () {
+      openNote = null;
+      commentsCache = null;
+      renderNotes();
+    });
+    p.appendChild(back);
+    if (!got) {
+      p.appendChild(el('div', 'empty', '那一页没应答'));
+      return;
+    }
+    const n = got.note || {};
+    const card = el('div', 'card');
+    card.appendChild(el('div', 'who', '<b>' + X.esc(n.title || '无标题') + '</b>'));
+    card.appendChild(el('p', 'said', X.esc(n.content)));
+    p.appendChild(card);
+    const rows = got.rows || [];
+    if (!rows.length) {
+      p.appendChild(el('div', 'empty', '这篇没有采到评论'));
+      return;
+    }
+    for (const one of rows) {
+      const c = one.row;
+      const worth = one.intent === X.INTENT_HIGH || one.intent === X.INTENT_MID;
+      const card2 = el('div', 'card');
+      if (worth) card2.style.background = 'var(--soft)';
+      card2.appendChild(el('div', 'who', '<b>' + X.esc(c.nickname || '匿名') + '</b>' +
+        (one.sex ? pill(one.sex, one.sex === '男' ? 'he' : 'she') : '') +
+        (worth ? pill('在举手', 'high') : '') +
+        (c.ip_location ? pill(c.ip_location) : '')));
+      card2.appendChild(el('p', 'said', X.esc(c.content)));
+      p.appendChild(card2);
+    }
+  }
+
+  // ---------- 人 ----------
+
+  let peopleCache = null;
+
+  async function renderPeople() {
+    const p = $('pane-people');
+    if (!peopleCache) {
+      p.innerHTML = '<div class="empty">读取中</div>';
+      peopleCache = await ask('people', {}, 8000);
+      if (!peopleCache) {
+        p.innerHTML = '<div class="empty">那一页没应答</div>';
+        return;
+      }
+    }
+    p.innerHTML = '';
+    const s = peopleCache.stat || {};
+    p.appendChild(el('div', 'who',
+      pill('共 ' + X.asInt(s.all)) + pill('高意向 ' + X.asInt(s.high), 'high') +
+      pill('中等 ' + X.asInt(s.mid)) + pill('无意向 ' + X.asInt(s.low)) +
+      pill('广告 ' + X.asInt(s.risky)) + pill('拉黑 ' + X.asInt(s.blocked))));
+
+    const sd = status.send;
+    if (sd.running) {
+      const box = el('div', 'big');
+      box.textContent = sd.waiting === 'dmkey'
+        ? '去那一页点一下标红的私信键，我接着把话发出去'
+        : (sd.waiting === 'send'
+          ? '话填好了，去那一页按发送，然后点下面的下一个'
+          : ('正在' + sd.kind + '　' + (sd.i + 1) + '/' + sd.total + '　' + sd.message));
+      p.appendChild(box);
+      const btns = el('div', 'btnrow');
+      if (sd.waiting === 'send') {
+        const next = el('button', 'btn', '我发过了，下一个');
+        next.addEventListener('click', async function () {
+          await ask('humanDone');
+          tick();
+        });
+        btns.appendChild(next);
+      }
+      const pause = el('button', 'btn ghost', sd.paused ? '继续' : '暂停');
+      pause.addEventListener('click', async function () {
+        await ask(sd.paused ? 'resumeSend' : 'pauseSend');
+        tick();
+      });
+      const stop = el('button', 'btn', '停止');
+      stop.addEventListener('click', async function () {
+        await ask('stopSend');
+        tick();
+      });
+      btns.appendChild(pause);
+      btns.appendChild(stop);
+      p.appendChild(btns);
+      if (sd.log.length) p.appendChild(el('div', 'log', X.esc(sd.log.join('\n'))));
+      return;
+    }
+
+    const rows = peopleCache.rows || [];
+    const btns = el('div', 'btnrow');
+    const dm = el('button', 'btn', '批量私信');
+    dm.addEventListener('click', async function () {
+      const r = await ask('startSend', { kind: '私信' }, 10000);
+      if (r && r.ok === false) alert(r.why);
+      peopleCache = null;
+      tick();
+    });
+    const cm = el('button', 'btn ghost', '批量评论');
+    cm.addEventListener('click', async function () {
+      const r = await ask('startSend', { kind: '评论' }, 10000);
+      if (r && r.ok === false) alert(r.why);
+      tick();
+    });
+    btns.appendChild(dm);
+    btns.appendChild(cm);
+    p.appendChild(btns);
+
+    if (!rows.length) {
+      p.appendChild(el('div', 'empty', '还没有可联系的人'));
+      return;
+    }
+    for (const r of rows) {
+      const card = el('div', 'card');
+      card.appendChild(el('div', 'who', '<b>' + X.esc(r.nickname || '匿名') + '</b>' +
+        pill(r.intent, r.intent === X.INTENT_HIGH ? 'high' : '') + pill(r.kind) +
+        (r.sex ? pill(r.sex, r.sex === '男' ? 'he' : 'she') : '') +
+        (r.ip_location ? pill(r.ip_location) : '')));
+      card.appendChild(el('p', 'said', X.esc(X.head(r.said, 160))));
+      card.appendChild(el('p', 'talk', X.esc(r.talk)));
+      const mini = el('div', 'mini');
+      const copy = el('button', '', '复制话术');
+      copy.addEventListener('click', async function () {
+        try {
+          await navigator.clipboard.writeText(r.talk);
+          copy.textContent = '已复制';
+        } catch (e) {
+          copy.textContent = '复制不了';
+        }
+      });
+      const ban = el('button', '', '拉黑');
+      ban.addEventListener('click', async function () {
+        await ask('block', { userId: r.user_id, nickname: r.nickname });
+        card.remove();
+      });
+      mini.appendChild(copy);
+      mini.appendChild(ban);
+      card.appendChild(mini);
+      p.appendChild(card);
+    }
+  }
+
+  // ---------- 私信记录 ----------
+
+  async function renderSent() {
+    const p = $('pane-sent');
+    p.innerHTML = '<div class="empty">读取中</div>';
+    const got = await ask('sent', {}, 8000);
+    p.innerHTML = '';
+    if (!got) {
+      p.innerHTML = '<div class="empty">那一页没应答</div>';
+      return;
+    }
+    const rows = got.rows || [];
+    const ok = rows.filter(function (r) { return r.status === '成功'; }).length;
+    p.appendChild(el('div', 'who', pill('全部 ' + rows.length) +
+      pill('成功 ' + ok, 'high') + pill('失败 ' + (rows.length - ok))));
+    if (!rows.length) {
+      p.appendChild(el('div', 'empty', '还没发过私信'));
+      return;
+    }
+    for (const s of rows) {
+      const card = el('div', 'card');
+      card.appendChild(el('div', 'who', '<b>' + X.esc(s.nickname || '匿名') + '</b>' +
+        pill(s.status, s.status === '成功' ? 'high' : '')));
+      if (s.said) card.appendChild(el('p', 'said', X.esc(X.head(s.said, 140))));
+      card.appendChild(el('p', 'talk', X.esc(s.text)));
+      card.appendChild(el('p', 'said', X.esc(X.asText(s.at).slice(0, 16) +
+        (s.status === '成功' ? '' : '　' + X.head(X.asText(s.detail).split('|')[0], 40)))));
+      p.appendChild(card);
+    }
+  }
+
+  // ---------- 设置 ----------
+
+  function renderSetting() {
+    const p = $('pane-setting');
+    p.innerHTML = '';
+    p.appendChild(el('div', 'who',
+      pill('帖子 ' + X.asInt((status.counts || {}).notes)) +
+      pill('评论 ' + X.asInt((status.counts || {}).comments)) +
+      pill(status.hook ? '钩子已装' : '钩子没装上')));
+
+    const tr = el('div', 'row', '<label>行业</label>');
+    const sel = el('select');
+    for (const i of X.allIndustries) {
+      const o = document.createElement('option');
+      o.value = i.key;
+      o.textContent = i.name;
+      if (i.key === status.trade) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', async function () {
+      await ask('trade', { trade: sel.value });
+      picked = new Set();
+      peopleCache = null;
+      notesCache = null;
+      tick();
+    });
+    tr.appendChild(sel);
+    p.appendChild(tr);
+
+    const num = function (label, value) {
+      const r = el('div', 'row', '<label>' + label + '</label>');
+      const i = el('input');
+      i.type = 'number';
+      i.value = value;
+      r.appendChild(i);
+      p.appendChild(r);
+      return i;
+    };
+    const bs = num('一批发几个', status.batchSize);
+    const bm = num('多少分钟发完', status.batchMinutes);
+    const save = el('div', 'btnrow');
+    const sb = el('button', 'btn ghost', '记下这个节奏');
+    sb.addEventListener('click', async function () {
+      await ask('limits', {
+        crawlSize: status.crawlSize, crawlMinutes: status.crawlMinutes,
+        batchSize: bs.value, batchMinutes: bm.value,
+      });
+      tick();
+    });
+    save.appendChild(sb);
+    p.appendChild(save);
+
+    p.appendChild(el('h3', '', '评论话术'));
+    const talks = (status.talks || []).slice();
+    for (let i = 0; i < talks.length; i++) {
+      const card = el('div', 'card');
+      const ta = el('textarea');
+      ta.value = talks[i].text;
+      ta.addEventListener('change', async function () {
+        talks[i].text = ta.value.trim();
+        await ask('talks', { talks: talks });
+        tick();
+      });
+      card.appendChild(ta);
+      const mini = el('div', 'mini');
+      const on = el('button', '', talks[i].on ? '发这条' : '不发这条');
+      on.addEventListener('click', async function () {
+        talks[i].on = !talks[i].on;
+        await ask('talks', { talks: talks });
+        tick();
+      });
+      const del = el('button', '', '删掉');
+      del.addEventListener('click', async function () {
+        talks.splice(i, 1);
+        await ask('talks', { talks: talks });
+        tick();
+      });
+      mini.appendChild(on);
+      mini.appendChild(del);
+      card.appendChild(mini);
+      p.appendChild(card);
+    }
+    const addRow = el('div', 'btnrow');
+    const addBtn = el('button', 'btn ghost', '加一条话术');
+    addBtn.addEventListener('click', async function () {
+      talks.push({ text: '', on: true });
+      await ask('talks', { talks: talks });
+      tick();
+    });
+    addRow.appendChild(addBtn);
+    p.appendChild(addRow);
+
+    const expRow = el('div', 'btnrow');
+    const exp = el('button', 'btn ghost', '导出全部数据');
+    exp.addEventListener('click', async function () {
+      const data = await ask('export', {}, 15000);
+      if (!data) {
+        alert('那一页没应答');
+        return;
+      }
+      X.download('获客数据_' + X.todayCst() + '.json',
+        JSON.stringify(data), 'application/json');
+    });
+    expRow.appendChild(exp);
+    p.appendChild(expRow);
+  }
+})();
+</script>
+
+</body>
+</html>

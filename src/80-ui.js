@@ -198,6 +198,8 @@ const UI = {
   nonce: 0,
   // 输入框里的话。面板整块重画，不存着就打一半没了。
   draft: '',
+  // 库开不了时那句话。空的就是一切正常。
+  dbError: '',
 };
 
 function el(tag, cls, html) {
@@ -331,6 +333,13 @@ function renderBody() {
   const b = body();
   b.innerHTML = '';
   foot(false);
+  // 库开不了的话，别的都不用画了，画了也全是空的
+  if (UI.dbError) {
+    b.appendChild(el('div', 'xhsc-warn',
+      '浏览器不让这个网站存数据，采到的东西没地方放。' +
+      '无痕模式下就是这样，换成普通窗口再来。<br>' + esc(UI.dbError)));
+    return;
+  }
   if (UI.tab === '采集') renderCollect(b);
   else if (UI.tab === '帖子') renderNotes(b);
   else if (UI.tab === '人') renderPeople(b);
