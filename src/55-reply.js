@@ -289,59 +289,46 @@ function makeReply(theirText, seed, city) {
 // 判不出来就不标。标错比不标贵得多：给一个找女孩的男生推荐男生，
 // 是这套东西最丢人的错法。
 
-// 昵称里的女性信号。长的排在前面，先匹配到哪个算哪个。
-const kSheWords = [
-  '小姐姐', '小仙女', '仙女', '美女', '姑娘', '女孩', '女生', '女神',
-  '宝妈', '辣妈', '公主', '丫头', '妹子', 'girl',
-  '姐', '妹', '妞', '媛', '婷', '娜', '娟', '妍', '婉', '琳',
-];
-
-const kHeWords = [
-  '小哥哥', '帅哥', '汉子', '男孩', '男生', '少年', '兄弟', '大叔', '先生',
-  'boy', '哥', '弟', '爷', '叔',
-];
-
-// 从昵称里认。
-//
-// 昵称里带找求征这类字的一概不认。想找个哥哥是个女生说的话，
-// 按哥字判就判反了，而这种昵称在相亲帖底下并不少见。
-function fromName(nickname) {
-  const s = asText(nickname).replace(/\s+/g, '');
-  if (!s) return '';
-  if (/找|求|征|想要/.test(s)) return '';
-  const she = kSheWords.find((w) => s.includes(w));
-  const he = kHeWords.find((w) => s.includes(w));
-  // 两边都命中就不猜了，比如带姐又带哥的昵称
-  if (she && he) return '';
-  if (she) return '女';
-  if (he) return '男';
-  return '';
-}
-
-// 从他在谁的帖子底下说话推。
-//
-// 应征的人跟发帖的人正是要凑成一对的两方，所以帖主是女的，
-// 底下举手的多半是男的。只在这个人确实在应征时才这么推，
-// 路过灌水的不算，那种人性别跟帖主没有关系。
-function fromNote(noteText, said) {
-  const owner = theirGender(noteText);
-  if (!owner) return '';
-  const v = judge(said, true);
-  if (v !== INTENT_HIGH && v !== INTENT_MID) return '';
-  return owner === '女' ? '男' : '女';
-}
-
 // 猜这个人是男是女。返回男、女，或者空串表示看不出来。
+//
+// 逐行照着手机版 lib/local/reply.dart 的同名函数写，判据和顺序完全一样，
+// 两端对同一个人必须给出同一个结论，不然导出的表摞到一起会自相矛盾。
+//
+// 宁可不标，不可标错。判据都是明写出来的说法，含糊的一律不认。
 //
 // [noteText] 是他评论的那篇帖子的正文。帖主自己不要传，
 // 传了会拿他自己的帖子去反推，正好推反。
 function guessGender(nickname, said, noteText) {
-  // 自己说的话最可靠，包括我是男这种自述和找男朋友这种反推
-  const a = theirGender(said);
-  if (a) return a;
-  const b = theirGender(nickname);
-  if (b) return b;
-  const c = fromName(nickname);
-  if (c) return c;
-  return fromNote(asText(noteText), said);
+  const byWords = theirGender(said);
+  if (byWords) return byWords;
+
+  const s = asText(said).replace(/\s+/g, '');
+  // 评论区里常见的短自述。这些说法单独成句时意思很明确。
+  if (/^(我)?(是)?男(的|生|滴)?[。！!~]?$/.test(s)) return '男';
+  if (/^(我)?(是)?女(的|生|滴)?[。！!~]?$/.test(s)) return '女';
+  if (/男嘉宾|男同胞|作为男生|我们男生|哥哥来了/.test(s)) return '男';
+  if (/女嘉宾|姐妹们|作为女生|我们女生|妹妹来了|姐妹/.test(s)) return '女';
+
+  const n = asText(nickname).replace(/\s+/g, '');
+  // 昵称里的称呼。放在后面，因为它最弱：叫小哥哥的不一定是男的。
+  //
+  // 昵称在说要找谁的一概不认。想找个哥哥是女生说的话，
+  // 按哥字判就判反了，而这种昵称在相亲帖底下并不少见。
+  if (n && !/找|求|征|想要/.test(n)) {
+    if (/哥$|弟$|先生$|少年|男孩|大叔|老王|小伙/.test(n)) return '男';
+    if (/姐$|妹$|女士$|小姐姐|女孩|姑娘|美女|宝妈|仙女/.test(n)) return '女';
+  }
+
+  // 最后看他在谁的帖子底下说话。
+  //
+  // 应征的人跟发帖的人正是要凑成一对的两方，所以帖主是女的，
+  // 底下举手的多半是男的。只在这个人确实在应征时才这么推，
+  // 路过灌水的不算，那种人性别跟帖主没有关系。
+  const post = asText(noteText);
+  if (!post) return '';
+  const owner = theirGender(post);
+  if (!owner) return '';
+  const v = judge(said, true);
+  if (v !== INTENT_HIGH && v !== INTENT_MID) return '';
+  return owner === '女' ? '男' : '女';
 }
