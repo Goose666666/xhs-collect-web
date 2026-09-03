@@ -718,6 +718,72 @@ function makeReply(theirText, seed, city) {
   return pickBySeed(shapes, seed || '', '句式');
 }
 
+// ---------- 判男女 ----------
+//
+// 红娘要的是男女配对，一屏评论里看不出谁是男谁是女，就得逐条点进主页看。
+// 平台的接口不给性别这一项，只能从这个人自己写的话、昵称、
+// 以及他在什么帖子底下说话推出来。
+//
+// 判不出来就不标。标错比不标贵得多：给一个找女孩的男生推荐男生，
+// 是这套东西最丢人的错法。
+
+// 昵称里的女性信号。长的排在前面，先匹配到哪个算哪个。
+const kSheWords = [
+  '小姐姐', '小仙女', '仙女', '美女', '姑娘', '女孩', '女生', '女神',
+  '宝妈', '辣妈', '公主', '丫头', '妹子', 'girl',
+  '姐', '妹', '妞', '媛', '婷', '娜', '娟', '妍', '婉', '琳',
+];
+
+const kHeWords = [
+  '小哥哥', '帅哥', '汉子', '男孩', '男生', '少年', '兄弟', '大叔', '先生',
+  'boy', '哥', '弟', '爷', '叔',
+];
+
+// 从昵称里认。
+//
+// 昵称里带找求征这类字的一概不认。想找个哥哥是个女生说的话，
+// 按哥字判就判反了，而这种昵称在相亲帖底下并不少见。
+function fromName(nickname) {
+  const s = asText(nickname).replace(/\s+/g, '');
+  if (!s) return '';
+  if (/找|求|征|想要/.test(s)) return '';
+  const she = kSheWords.find((w) => s.includes(w));
+  const he = kHeWords.find((w) => s.includes(w));
+  // 两边都命中就不猜了，比如带姐又带哥的昵称
+  if (she && he) return '';
+  if (she) return '女';
+  if (he) return '男';
+  return '';
+}
+
+// 从他在谁的帖子底下说话推。
+//
+// 应征的人跟发帖的人正是要凑成一对的两方，所以帖主是女的，
+// 底下举手的多半是男的。只在这个人确实在应征时才这么推，
+// 路过灌水的不算，那种人性别跟帖主没有关系。
+function fromNote(noteText, said) {
+  const owner = theirGender(noteText);
+  if (!owner) return '';
+  const v = judge(said, true);
+  if (v !== INTENT_HIGH && v !== INTENT_MID) return '';
+  return owner === '女' ? '男' : '女';
+}
+
+// 猜这个人是男是女。返回男、女，或者空串表示看不出来。
+//
+// [noteText] 是他评论的那篇帖子的正文。帖主自己不要传，
+// 传了会拿他自己的帖子去反推，正好推反。
+function guessGender(nickname, said, noteText) {
+  // 自己说的话最可靠，包括我是男这种自述和找男朋友这种反推
+  const a = theirGender(said);
+  if (a) return a;
+  const b = theirGender(nickname);
+  if (b) return b;
+  const c = fromName(nickname);
+  if (c) return c;
+  return fromNote(asText(noteText), said);
+}
+
 
 // ===== 58-csv.js =====
 // 导出成 CSV，拿到电脑上用表格软件打开。
@@ -748,13 +814,19 @@ function csvText(header, rows) {
 }
 
 // 表头一律用界面上的说法，导出来的表和面板里看到的能对上号。
-const peopleHeader = ['昵称', '类型', '属地', '说的话', '时间', '点赞', '关键词', '笔记标题'];
+// 性别接在最后一列。
+//
+// 手机版那张表没有这一列，摆在中间会让两边的表摞不齐；
+// 挂在末尾的话，前八列还是一一对上的，手机版导出的行只是最后一格空着。
+const peopleHeader = ['昵称', '类型', '属地', '说的话', '时间', '点赞', '关键词',
+  '笔记标题', '性别'];
 const notesHeader = ['标题', '作者', '属地', '正文', '话题标签', '发布时间', '点赞', '评论', '关键词', '笔记链接'];
 const commentsHeader = ['昵称', '属地', '说的话', '时间', '点赞', '关键词', '笔记标题'];
 
 function peopleCsv(rows) {
   return csvText(peopleHeader, rows.map((r) => [
-    r.nickname, r.kind, r.ip_location, r.said, r.ts, r.likes, r.keyword, r.note_title,
+    r.nickname, r.kind, r.ip_location, r.said, r.ts, r.likes, r.keyword,
+    r.note_title, r.sex,
   ]));
 }
 
@@ -789,7 +861,7 @@ window.XHS = {
   allIndustries, industryOf, Trade,
   judge, judgePerson, saidStop, runFunnel,
   INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY,
-  parseWants, wantsWords, makeReply, theirGender,
+  parseWants, wantsWords, makeReply, theirGender, guessGender,
   peopleCsv, notesCsv, csvText, download,
 };
 

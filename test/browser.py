@@ -327,6 +327,9 @@ def main():
         check('私信 1 个人' in foot, '底下的按钮只数评论区的人 ' + foot)
         check('评论 1 篇' in foot, '评论按帖子去重 ' + foot)
 
+        check(page.locator('.xhsc-card', has_text='小明').first
+              .locator('.xhsc-tag.he').count() == 1, '人名单上也标了男女')
+
         talk = page.evaluate("""() => {
           const c = document.querySelectorAll('.xhsc-card')[0];
           return c.querySelectorAll('p')[1].textContent;
@@ -349,6 +352,22 @@ def main():
         notes_text = page.inner_text('.xhsc-body')
         check('重庆女生找对象' in notes_text, '帖子标题')
         check('12000' in notes_text, '点赞数')
+
+        print('帖子下面的评论标男女')
+        page.locator('.xhsc-card').first.click()
+        page.wait_for_timeout(700)
+        detail = page.inner_text('.xhsc-body')
+        check('举手' in detail, '点进去看得到这篇底下的评论')
+        check('加微信详聊' in detail, '广告号在评论列表里也留着，这一页不筛人')
+        # 小明在一个女生的找对象帖底下举手，按相反的性别算
+        mingCard = page.locator('.xhsc-card', has_text='举手').first
+        check('男' in mingCard.inner_text(), '举手的评论者标了男 ' + mingCard.inner_text())
+        sexes = page.locator('.xhsc-tag.he, .xhsc-tag.she').count()
+        check(sexes >= 2, '帖主和评论者都标上了，实际 %d 个标签' % sexes)
+        check(page.locator('.xhsc-tag.she').count() >= 1, '帖主是女的')
+        page.locator('.xhsc-body button', has_text='返回').click()
+        page.wait_for_timeout(500)
+        check(page.locator('.xhsc-card').count() >= 1, '返回回得到列表')
 
         print('私信记录')
         page.click('.xhsc-tab >> nth=3')

@@ -271,6 +271,38 @@ function buildUserUrl(userId) {
   return userId ? 'https://www.xiaohongshu.com/user/profile/' + userId : '';
 }
 
+// 把带时效的图片地址换成不过期的那一个。
+//
+// 采回来的地址长这样：
+// sns-webpic-qc.xhscdn.com/时间/一串哈希/notes_pre_post/图片号!处理参数
+// 前面那两段是签出来的，隔两天整条地址一律回 403，换什么请求头都没用，
+// 表现就是翻旧帖子一片空白。换成 sns-img-qc 这个域名、只留图片号那几段，
+// 同一张图永远取得到。
+//
+// 顺带按宽度要压缩版，列表和九宫格都用不到原图那么大。
+// 认不出来的地址原样返回，不瞎改。
+function stableUrl(url, width) {
+  const u = asText(url);
+  if (!u.includes('xhscdn.com')) return u;
+  // 自己切路径，不用 URL 那个类。地址偶尔带没转义的字符，构造时会抛，
+  // 而这个函数是画一行就调一次的，抛出去整页都不显示了。
+  const noProto = u.replace(/^[a-z]+:\/\//i, '');
+  const slash = noProto.indexOf('/');
+  if (slash < 0) return u;
+  const parts = noProto.slice(slash + 1).split('?')[0].split('#')[0]
+    .split('/').filter(Boolean);
+  if (parts.length < 2) return u;
+  // 时间那一段和哈希那一段去掉，图片号后面的处理参数也去掉
+  const keep = parts
+    .filter((x) => !/^\d{10,14}$/.test(x))
+    .filter((x) => !/^[0-9a-f]{32}$/.test(x))
+    .map((x) => x.split('!')[0])
+    .filter(Boolean);
+  if (!keep.length) return u;
+  return 'https://sns-img-qc.xhscdn.com/' + keep.join('/') +
+    '?imageView2/2/w/' + (width || 540) + '/format/webp';
+}
+
 // 搜索结果页的地址。关键词必须整体转义，中文和空格直接拼进去会拼出一个打不开的地址。
 function searchUrl(keyword) {
   return 'https://www.xiaohongshu.com/search_result?keyword=' +

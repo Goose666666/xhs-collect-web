@@ -26,13 +26,19 @@ function csvText(header, rows) {
 }
 
 // 表头一律用界面上的说法，导出来的表和面板里看到的能对上号。
-const peopleHeader = ['昵称', '类型', '属地', '说的话', '时间', '点赞', '关键词', '笔记标题'];
+// 性别接在最后一列。
+//
+// 手机版那张表没有这一列，摆在中间会让两边的表摞不齐；
+// 挂在末尾的话，前八列还是一一对上的，手机版导出的行只是最后一格空着。
+const peopleHeader = ['昵称', '类型', '属地', '说的话', '时间', '点赞', '关键词',
+  '笔记标题', '性别'];
 const notesHeader = ['标题', '作者', '属地', '正文', '话题标签', '发布时间', '点赞', '评论', '关键词', '笔记链接'];
 const commentsHeader = ['昵称', '属地', '说的话', '时间', '点赞', '关键词', '笔记标题'];
 
 function peopleCsv(rows) {
   return csvText(peopleHeader, rows.map((r) => [
-    r.nickname, r.kind, r.ip_location, r.said, r.ts, r.likes, r.keyword, r.note_title,
+    r.nickname, r.kind, r.ip_location, r.said, r.ts, r.likes, r.keyword,
+    r.note_title, r.sex,
   ]));
 }
 

@@ -14,7 +14,7 @@ const path = require('path');
 const root = __dirname;
 const src = (f) => fs.readFileSync(path.join(root, 'src', f), 'utf8');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // 用户脚本的说明块。脚本管理器认的就是这一段。
 //
@@ -102,7 +102,7 @@ window.XHS = {
   allIndustries, industryOf, Trade,
   judge, judgePerson, saidStop, runFunnel,
   INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY,
-  parseWants, wantsWords, makeReply, theirGender,
+  parseWants, wantsWords, makeReply, theirGender, guessGender,
   peopleCsv, notesCsv, csvText, download,
 };
 `;

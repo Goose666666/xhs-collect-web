@@ -30,7 +30,7 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'runFunnel, INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY, parseWants, ' +
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
-  'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds };', ctx);
+  'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -342,6 +342,54 @@ group('导出表格', () => {
   }]);
   ok(csv.includes('昵称,类型,属地,说的话,时间,点赞,关键词,笔记标题'), '表头跟手机版一致');
   ok(csv.includes('小明,评论者,重庆,举手'), '数据行');
+});
+
+// ---------- 判男女 ----------
+
+group('判男女', () => {
+  eq(A.guessGender('小明', '我是男生，想找女朋友', ''), '男', '自己说了是男的');
+  eq(A.guessGender('小红', '想找男朋友', ''), '女', '找男朋友反推是女的');
+  eq(A.guessGender('小仙女本仙', '举手', ''), '女', '昵称里的女性信号');
+  eq(A.guessGender('隔壁帅哥', '举手', ''), '男', '昵称里的男性信号');
+  eq(A.guessGender('无名氏', '今天天气不错', ''), '', '看不出来就不标');
+
+  // 应征的人跟帖主是相反的性别，这是第三档依据
+  eq(A.guessGender('无名氏', '举手', '本人98年女，想找个认真谈的对象'), '男',
+    '女生的找对象帖底下举手的按男的算');
+  eq(A.guessGender('无名氏', '举手', '本人男，想找个女朋友'), '女',
+    '反过来一样');
+  eq(A.guessGender('无名氏', '这帖子写得真好', '本人98年女，想找对象'), '',
+    '路过灌水的不算应征，不能拿帖主去反推');
+  eq(A.guessGender('无名氏', '举手', '今天去爬山了'), '',
+    '帖主自己都看不出男女就别推了');
+
+  // 昵称里带找求征的一概不认，想找个哥哥是女生说的话
+  eq(A.guessGender('想找个哥哥', '在吗', ''), '', '昵称在说要找谁，不是在说自己');
+  eq(A.guessGender('哥哥和姐姐', '在吗', ''), '', '两边都命中就不猜');
+
+  // 帖主自己那条不能拿他自己的帖子当上下文，会正好推反
+  eq(A.guessGender('小鱼', '本人98年女，想找个认真谈的对象', ''), '女',
+    '帖主从自己写的话里判');
+});
+
+// ---------- 图片地址 ----------
+
+group('图片地址', () => {
+  const signed = 'http://sns-webpic-qc.xhscdn.com/202609031030/' +
+    '3f2a1b4c5d6e7f8091a2b3c4d5e6f708/notes_pre_post/1040g0083!nd_dft_wlteh_webp_3';
+  const fixed = A.stableUrl(signed);
+  ok(fixed.includes('sns-img-qc.xhscdn.com'), '换成不过期那个域名 ' + fixed);
+  ok(!fixed.includes('202609031030'), '时间那一段要去掉');
+  ok(!fixed.includes('3f2a1b4c'), '哈希那一段要去掉');
+  ok(fixed.includes('notes_pre_post/1040g0083'), '图片号留着');
+  ok(!fixed.includes('!nd_dft'), '感叹号后面的处理参数去掉');
+  ok(fixed.includes('w/540'), '默认要 540 宽的压缩版');
+  ok(A.stableUrl(signed, 200).includes('w/200'), '宽度能指定');
+
+  const dy = 'https://p3-pc-sign.douyinpic.com/abc~tplv-dy.jpeg';
+  eq(A.stableUrl(dy), dy, '抖音的地址不是这个规则，原样返回');
+  eq(A.stableUrl(''), '', '空的原样返回');
+  eq(A.stableUrl('不是个地址'), '不是个地址', '认不出来就别瞎改');
 });
 
 // ---------- 抖音 ----------

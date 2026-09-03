@@ -329,6 +329,22 @@ function userUrlHere(userId) {
   return onDouyin() ? douyinUserUrl(userId) : buildUserUrl(userId);
 }
 
+// 人要看这篇原帖时打开的地址。
+//
+// 抖音的 www.douyin.com/video 是整个站的单页应用，一进去就拉推荐流、
+// 起播放器、装一大堆埋点，手机上卡得几乎滑不动。分享页是同一条作品的
+// 轻量版，只有视频本身和作者信息，打开快得多。
+//
+// 采集不能走这个地址，那边不发我们要钩的那批接口。
+function viewUrl(note) {
+  const id = asText(note.note_id);
+  if (!id) return asText(note.note_url);
+  if (asSite(note.site) === '抖音') {
+    return 'https://www.iesdouyin.com/share/video/' + id + '/';
+  }
+  return asText(note.note_url) || buildNoteUrl(id, note.xsec_token, 'pc_search');
+}
+
 // 这个人的主页开得了开不了。抖音要 sec_uid，小红书随便什么 id 都能开。
 function canOpenProfile(userId) {
   return onDouyin() ? canOpenDouyinProfile(userId) : !!asText(userId);

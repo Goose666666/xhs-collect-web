@@ -215,6 +215,9 @@ async function listPeople(filter) {
       nickname: n.author_name,
       ip_location: n.ip_location,
       said: said,
+      // 帖主不传帖子正文当上下文。那正是他自己写的话，
+      // 拿它去反推等于拿自己推自己，推出来的性别正好是反的。
+      sex: guessGender(n.author_name, said, ''),
       ts: n.publish_time,
       likes: asInt(n.likes),
       note_id: n.note_id,
@@ -230,12 +233,15 @@ async function listPeople(filter) {
   for (const c of comments) {
     if (!c.user_id) continue;
     const n = byId[c.note_id] || {};
+    // 他在谁的帖子底下说话，这是判男女的第三档依据
+    const noteText = (asText(n.title) + ' ' + asText(n.content)).trim();
     out.push({
       kind: '评论者',
       user_id: c.user_id,
       nickname: c.nickname,
       ip_location: c.ip_location,
       said: asText(c.content),
+      sex: guessGender(c.nickname, c.content, noteText),
       ts: c.comment_time,
       likes: asInt(c.likes),
       note_id: c.note_id,

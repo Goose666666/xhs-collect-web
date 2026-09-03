@@ -88,11 +88,18 @@ const PANEL_CSS = `
   font-size: 12px; background: #f2f2f4; color: #666; }
 .xhsc-tag.hot { background: var(--xc-soft); color: var(--xc-accent); }
 .xhsc-tag.bad { background: #ffe9e9; color: #c62828; }
+/* 男女各给一个颜色。一屏评论扫过去，靠颜色比靠读字快得多。 */
+.xhsc-tag.he { background: #e8eef4; color: #5b7c99; }
+.xhsc-tag.she { background: #fcf0ee; color: #d94a3d; }
 .xhsc-time { font-size: 12px; color: #aaa; }
 .xhsc-mini { display: flex; gap: 8px; }
 .xhsc-mini button { flex: 1; height: 36px; border-radius: 9px; border: 1px solid #eee;
   background: #fff; color: #333; cursor: pointer; font-size: 13.5px; }
 .xhsc-empty { text-align: center; color: #aaa; font-size: 14px; padding: 40px 0; }
+.xhsc-cover { width: 64px; height: 64px; border-radius: 9px; object-fit: cover;
+  flex: none; background: #f2f2f4; display: block; }
+.xhsc-noterow { display: flex; gap: 12px; align-items: flex-start; }
+.xhsc-noterow > div { flex: 1; min-width: 0; }
 .xhsc-warn { background: #fff4e0; color: #a35a00; border-radius: 10px;
   padding: 11px 12px; font-size: 14px; line-height: 1.7; margin-bottom: 12px; }
 .xhsc-big { background: var(--xc-soft); color: var(--xc-accent); border-radius: 12px;
@@ -130,6 +137,8 @@ const PANEL_CSS = `
   .xhsc-card p { color: #bbb; }
   .xhsc-talk { color: #f2f2f4; }
   .xhsc-tag { background: #26262b; color: #aaa; }
+  .xhsc-tag.he { background: #1c2630; color: #7c9cb8; }
+  .xhsc-tag.she { background: #261815; color: #e0685c; }
   .xhsc-mini button { background: #1f1f24; border-color: #33333a; color: #ddd; }
   .xhsc-root.dy { --xc-accent: #ededea; --xc-soft: #232529; }
 }
@@ -151,6 +160,8 @@ const UI = {
   page: 0,
   pageSize: 40,
   sentOnlyOk: false,
+  // 帖子页正在看哪一篇。空的时候看的是列表。
+  note: null,
 };
 
 function el(tag, cls, html) {
@@ -169,6 +180,43 @@ function avatar(name) {
   const a = el('div', 'xhsc-ava', esc(s.slice(0, 1)));
   a.style.background = 'hsl(' + (h % 360) + ',52%,58%)';
   return a;
+}
+
+// 男女那个标签。判不出来的不给标签，宁可少一个也别标错。
+function sexTag(sex) {
+  return el('span', 'xhsc-tag ' + (sex === '男' ? 'he' : 'she'), esc(sex));
+}
+
+// 封面图。
+//
+// 面板跑在平台自己的页面上，图床要的来路正好就是这个域，所以直接贴地址
+// 就能显示。拿到别处去看就不行了，图床会挡下来。
+//
+// 图床的地址是带签名的，过一阵子会失效。失效的图不留空框，
+// 整个撤掉，那一行自动变回只有文字的样子。
+function coverImg(url, size) {
+  const u = asText(url);
+  if (!u) return null;
+  const im = document.createElement('img');
+  im.className = 'xhsc-cover';
+  im.loading = 'lazy';
+  // 采回来那条地址是签过的，隔两天就 403，所以换成不过期的那一条
+  im.src = stableUrl(u, size ? size * 2 : 200);
+  // 换出来的地址万一认错了，还有原地址兜底
+  let tried = false;
+  im.addEventListener('error', () => {
+    if (!tried && im.src !== u) {
+      tried = true;
+      im.src = u;
+      return;
+    }
+    im.remove();
+  });
+  if (size) {
+    im.style.width = size + 'px';
+    im.style.height = size + 'px';
+  }
+  return im;
 }
 
 function mountPanel() {
@@ -214,6 +262,7 @@ function mountPanel() {
     t.addEventListener('click', () => {
       UI.tab = name;
       UI.page = 0;
+      UI.note = null;
       for (const o of tabs.children) o.classList.toggle('on', o.textContent === name);
       renderBody();
     });
@@ -398,6 +447,11 @@ function renderRunning(b, job) {
 // ---------- 帖子页 ----------
 
 async function renderNotes(b) {
+  // 点开某一篇就看那一篇底下的评论
+  if (UI.note) {
+    await renderNoteDetail(b, UI.note);
+    return;
+  }
   b.appendChild(el('div', 'xhsc-empty', '读取中'));
   const rows = (await getAll('notes'))
     .filter((n) => asTrade(n.trade) === Trade.now.key)
@@ -409,23 +463,164 @@ async function renderNotes(b) {
   }
   for (const n of rows.slice(0, 200)) {
     const c = el('div', 'xhsc-card');
-    const who = el('div', 'xhsc-who');
-    who.appendChild(el('div', 'xhsc-name',
+    const row = el('div', 'xhsc-noterow');
+    const im = coverImg(n.cover);
+    if (im) row.appendChild(im);
+    const right = el('div');
+    right.appendChild(el('div', 'xhsc-name',
       esc(n.title || head(n.content, 24) || '无标题')));
-    c.appendChild(who);
-    c.appendChild(el('div', 'xhsc-who',
-      '<span class="xhsc-tag">' + esc(n.author_name) + '</span>' +
-      '<span class="xhsc-tag">赞 ' + asInt(n.likes) + '</span>' +
-      '<span class="xhsc-tag">评论 ' + asInt(n.comment_cnt) + '</span>' +
-      (n.ip_location ? '<span class="xhsc-tag">' + esc(n.ip_location) + '</span>' : '') +
-      (n.keyword ? '<span class="xhsc-tag hot">' + esc(n.keyword) + '</span>' : '')));
-    if (n.content) c.appendChild(el('p', '', esc(head(n.content, 90))));
+    right.appendChild(noteMeta(n));
+    if (n.content) right.appendChild(el('p', '', esc(head(n.content, 70))));
+    row.appendChild(right);
+    c.appendChild(row);
     c.style.cursor = 'pointer';
     c.addEventListener('click', () => {
-      if (n.note_url) window.open(n.note_url, '_blank');
+      UI.note = n;
+      renderBody();
     });
     b.appendChild(c);
   }
+}
+
+function noteMeta(n) {
+  const owner = guessGender(n.author_name, (asText(n.title) + ' ' + asText(n.content)), '');
+  const row = el('div', 'xhsc-who');
+  row.appendChild(el('span', 'xhsc-tag', esc(n.author_name)));
+  if (owner) row.appendChild(sexTag(owner));
+  row.appendChild(el('span', 'xhsc-tag', '赞 ' + asInt(n.likes)));
+  row.appendChild(el('span', 'xhsc-tag', '评论 ' + asInt(n.comment_cnt)));
+  if (n.ip_location) row.appendChild(el('span', 'xhsc-tag', esc(n.ip_location)));
+  if (n.keyword) row.appendChild(el('span', 'xhsc-tag hot', esc(n.keyword)));
+  return row;
+}
+
+// 一篇帖子和它底下的评论。
+//
+// 每条评论后面标了男女。红娘看一屏评论最先要分的就是男女，
+// 不标的话得逐个点进主页看，一篇几十条评论根本看不过来。
+async function renderNoteDetail(b, n) {
+  const back = el('div', 'xhsc-btns');
+  const bk = el('button', 'xhsc-btn ghost', '返回');
+  bk.addEventListener('click', () => {
+    UI.note = null;
+    renderBody();
+  });
+  const open = el('button', 'xhsc-btn ghost', '打开原帖');
+  open.addEventListener('click', () => {
+    const u = viewUrl(n);
+    if (u) window.open(u, '_blank');
+  });
+  back.appendChild(bk);
+  back.appendChild(open);
+  b.appendChild(back);
+
+  const card = el('div', 'xhsc-card');
+  card.appendChild(el('div', 'xhsc-name',
+    esc(n.title || head(n.content, 24) || '无标题')));
+  card.appendChild(noteMeta(n));
+  // 采到的图全摆出来，一篇帖子的图往往比正文更能说明这个人什么样
+  const pics = asText(n.images).split(' | ').filter(Boolean);
+  const shots = pics.length ? pics : [asText(n.cover)].filter(Boolean);
+  if (shots.length) {
+    const strip = el('div', 'xhsc-who');
+    for (const u of shots.slice(0, 9)) {
+      const im = coverImg(u, 78);
+      if (im) strip.appendChild(im);
+    }
+    card.appendChild(strip);
+  }
+  if (n.content) card.appendChild(el('p', '', esc(n.content)));
+  b.appendChild(card);
+
+  const all = (await getAll('comments')).filter((c) => c.note_id === n.note_id);
+  if (!all.length) {
+    b.appendChild(el('div', 'xhsc-empty', '这篇没有采到评论'));
+    return;
+  }
+
+  const noteText = (asText(n.title) + ' ' + asText(n.content)).trim();
+  // 一级按点赞排，各自的回复紧跟在后面，跟平台上看到的顺序一致
+  const tops = all.filter((c) => !c.parent_id)
+    .sort((a, b2) => asInt(b2.likes) - asInt(a.likes));
+  const kids = {};
+  for (const c of all) {
+    if (!c.parent_id) continue;
+    if (!kids[c.parent_id]) kids[c.parent_id] = [];
+    kids[c.parent_id].push(c);
+  }
+  const shown = new Set();
+  for (const t of tops) {
+    b.appendChild(commentCard(t, n, noteText, false));
+    shown.add(t.comment_id);
+    for (const s of kids[t.comment_id] || []) {
+      b.appendChild(commentCard(s, n, noteText, true));
+      shown.add(s.comment_id);
+    }
+  }
+  // 父评论没采到的回复别丢，单独挂在后面，不然评论数对不上
+  for (const c of all) {
+    if (!shown.has(c.comment_id)) b.appendChild(commentCard(c, n, noteText, true));
+  }
+}
+
+function commentCard(c, n, noteText, isSub) {
+  const sex = guessGender(c.nickname, c.content, noteText);
+  const card = el('div', 'xhsc-card');
+  if (isSub) card.style.marginLeft = '22px';
+
+  const who = el('div', 'xhsc-who');
+  who.appendChild(avatar(c.nickname));
+  who.appendChild(el('div', 'xhsc-name', esc(c.nickname || '匿名')));
+  if (sex) who.appendChild(sexTag(sex));
+  if (c.ip_location) who.appendChild(el('span', 'xhsc-tag', esc(c.ip_location)));
+  if (asInt(c.likes) > 0) {
+    who.appendChild(el('span', 'xhsc-tag', '赞 ' + asInt(c.likes)));
+  }
+  if (c.comment_time) {
+    who.appendChild(el('span', 'xhsc-time', esc(asText(c.comment_time).slice(0, 16))));
+  }
+  card.appendChild(who);
+  card.appendChild(el('p', '', esc(c.content)));
+
+  const person = {
+    kind: '评论者',
+    user_id: c.user_id,
+    nickname: c.nickname,
+    ip_location: c.ip_location,
+    said: asText(c.content),
+    note_id: c.note_id,
+    xsec_token: n.xsec_token,
+    note_url: n.note_url,
+    site: asSite(c.site),
+    trade: asTrade(c.trade),
+    sex: sex,
+  };
+  const talk = draftFor(person);
+
+  const mini = el('div', 'xhsc-mini');
+  if (canOpenProfile(c.user_id)) {
+    const dm = el('button', '', '私信');
+    dm.addEventListener('click', () => launchSend([person], '私信'));
+    mini.appendChild(dm);
+  }
+  const re = el('button', '', '回复');
+  re.addEventListener('click', () =>
+    launchSend([Object.assign({}, person, { text: talk })], '评论'));
+  mini.appendChild(re);
+  const copy = el('button', '', '复制话术');
+  copy.addEventListener('click', async () => {
+    await copyText(talk);
+    copy.textContent = '已复制';
+  });
+  mini.appendChild(copy);
+  const ban = el('button', '', '拉黑');
+  ban.addEventListener('click', async () => {
+    await blockUser(c.user_id, c.nickname, '手动拉黑');
+    card.remove();
+  });
+  mini.appendChild(ban);
+  card.appendChild(mini);
+  return card;
 }
 
 // ---------- 人页 ----------
@@ -572,6 +767,7 @@ function personCard(p) {
   who.appendChild(avatar(p.nickname));
   who.appendChild(el('div', 'xhsc-name', esc(p.nickname || '匿名')));
   who.appendChild(el('span', 'xhsc-tag' + (isAuthor ? ' hot' : ''), esc(p.kind)));
+  if (p.sex) who.appendChild(sexTag(p.sex));
   if (p.intent === INTENT_HIGH) who.appendChild(el('span', 'xhsc-tag hot', '高意向'));
   if (p.ip_location) who.appendChild(el('span', 'xhsc-tag', esc(p.ip_location)));
   if (p.ts) who.appendChild(el('span', 'xhsc-time', esc(asText(p.ts).slice(0, 16))));
@@ -629,7 +825,12 @@ function personCard(p) {
   // 点卡片就是看原帖，那是顺手确认这个人说话场景的动作
   c.style.cursor = 'pointer';
   c.addEventListener('click', () => {
-    const u = p.note_url || noteUrlHere(p.note_id, p.xsec_token);
+    const u = viewUrl({
+      note_id: p.note_id,
+      note_url: p.note_url,
+      xsec_token: p.xsec_token,
+      site: p.site,
+    });
     if (u) window.open(u, '_blank');
   });
   return c;
@@ -811,6 +1012,7 @@ async function renderSettings(b) {
   sel.addEventListener('change', async () => {
     await Trade.switchTo(sel.value);
     UI.picked = new Set();
+    UI.note = null;
     _peopleCache = null;
     renderBody();
   });

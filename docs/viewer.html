@@ -21,6 +21,13 @@
     border: 1px solid var(--line); font-size: 14px; color: var(--text2);
   }
   .pill.high { background: var(--soft); color: var(--accent); border-color: transparent; }
+  /* 男女各给一个颜色，一列扫过去靠颜色比靠读字快 */
+  .pill.he { background: #e8eef4; color: #5b7c99; border-color: transparent; }
+  .pill.she { background: #fcf0ee; color: #d94a3d; border-color: transparent; }
+  @media (prefers-color-scheme: dark) {
+    .pill.he { background: #1c2630; color: #7c9cb8; }
+    .pill.she { background: #261815; color: #e0685c; }
+  }
   .tabs { display: flex; gap: 6px; margin-bottom: 18px; }
   .tabs button {
     flex: 1; height: 44px; border-radius: 11px; border: 1px solid var(--line);
@@ -172,17 +179,22 @@
         likes: X.asInt(n.likes), note_id: n.note_id, note_title: title,
         note_url: n.note_url, keyword: n.keyword, comment_id: '',
         site: X.asSite(n.site), trade: X.asTrade(n.trade),
+        // 帖主不拿自己的帖子当上下文，那会正好推反
+        sex: X.guessGender(n.author_name, said, ''),
       });
     }
     for (const c of comments) {
       if (!c.user_id) continue;
       const n = byId[c.note_id] || {};
+      const noteText = (X.asText(n.title) + ' ' + X.asText(n.content)).trim();
       people.push({
         kind: '评论者', user_id: c.user_id, nickname: c.nickname,
         ip_location: c.ip_location, said: X.asText(c.content), ts: c.comment_time,
         likes: X.asInt(c.likes), note_id: c.note_id, note_title: X.asText(n.title),
         note_url: n.note_url || '', keyword: X.asText(n.keyword),
         comment_id: c.comment_id, site: X.asSite(c.site), trade: X.asTrade(c.trade),
+        // 他在谁的帖子底下说话，这是判男女的第三档依据
+        sex: X.guessGender(c.nickname, c.content, noteText),
       });
     }
 
@@ -250,7 +262,8 @@
     c.innerHTML =
       '<div class="who"><b>' + X.esc(p.nickname || '无名') + '</b>' +
       pill(p.intent, p.intent === X.INTENT_HIGH ? 'high' : '') +
-      pill(p.kind) + (p.ip_location ? pill(p.ip_location) : '') + '</div>' +
+      pill(p.kind) + (p.sex ? pill(p.sex, p.sex === '男' ? 'he' : 'she') : '') +
+      (p.ip_location ? pill(p.ip_location) : '') + '</div>' +
       '<p class="said">' + X.esc(X.head(p.said, 160)) + '</p>' +
       '<p class="talk">' + X.esc(talk) + '</p>' +
       '<div class="mini">' +
