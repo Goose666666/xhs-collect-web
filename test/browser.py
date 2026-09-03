@@ -58,7 +58,7 @@ EXPORT = {
             "publish_time": "2026-08-01 10:00:00",
             "note_url": "https://www.xiaohongshu.com/explore/n0001?xsec_token=T",
             "xsec_token": "T",
-            "cover": "", "images": "", "keyword": "脱单",
+            "cover": "http://127.0.0.1:%d/pic" % PORT, "images": "", "keyword": "脱单",
             "fetched_at": "2026-09-01 10:00:00",
             "site": "小红书", "trade": "love",
         }],
@@ -181,6 +181,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        if self.path.startswith('/pic'):
+            # 一张 1x1 的透明 png，用来验封面图真的画出来了
+            png = bytes.fromhex(
+                '89504e470d0a1a0a0000000d49484452000000010000000108060000001f'
+                '15c4890000000a49444154789c6300010000050001'
+                '0d0a2db40000000049454e44ae426082')
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.send_header('Content-Length', str(len(png)))
+            self.end_headers()
+            self.wfile.write(png)
+            return
         if self.path.startswith('/api/sns/'):
             return self._send(json.dumps(SEARCH), 'application/json')
         if self.path.startswith('/profile'):
@@ -352,6 +364,12 @@ def main():
         notes_text = page.inner_text('.xhsc-body')
         check('重庆女生找对象' in notes_text, '帖子标题')
         check('12000' in notes_text, '点赞数')
+        page.wait_for_timeout(400)
+        check(page.locator('.xhsc-cover').count() == 1, '封面图画出来了')
+        check(page.evaluate("""() => {
+          const im = document.querySelector('.xhsc-cover');
+          return !!im && im.complete && im.naturalWidth > 0;
+        }"""), '封面图真的加载成功了，不是一个破图框')
 
         print('帖子下面的评论标男女')
         page.locator('.xhsc-card').first.click()
