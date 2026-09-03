@@ -14,7 +14,7 @@ const path = require('path');
 const root = __dirname;
 const src = (f) => fs.readFileSync(path.join(root, 'src', f), 'utf8');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 // 用户脚本的说明块。脚本管理器认的就是这一段。
 //
@@ -49,6 +49,7 @@ const USER_FILES = [
   '50-funnel.js',
   '55-reply.js',
   '56-poster.js',
+  '57-draft.js',
   '58-csv.js',
   '60-hook.js',
   '70-engine.js',
@@ -60,6 +61,7 @@ const USER_FILES = [
 // 看板网页只做看和导出，不采集，所以不要库、钩子、状态机那几块。
 const LIB_FILES = [
   '10-util.js',
+  '57-draft.js',
   '40-industry.js',
   '50-funnel.js',
   '55-reply.js',
@@ -102,7 +104,7 @@ window.XHS = {
   allIndustries, industryOf, Trade,
   judge, judgePerson, saidStop, runFunnel,
   INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY,
-  parseWants, wantsWords, makeReply, theirGender, guessGender,
+  parseWants, wantsWords, makeReply, theirGender, guessGender, draftFor, echoOf,
   peopleCsv, notesCsv, csvText, download,
 };
 `;

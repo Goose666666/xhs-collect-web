@@ -371,21 +371,60 @@ def main():
           return !!im && im.complete && im.naturalWidth > 0;
         }"""), '封面图真的加载成功了，不是一个破图框')
 
-        print('帖子下面的评论标男女')
+        print('帖子点进去看评论')
         page.locator('.xhsc-card').first.click()
         page.wait_for_timeout(700)
         detail = page.inner_text('.xhsc-body')
         check('举手' in detail, '点进去看得到这篇底下的评论')
         check('加微信详聊' in detail, '广告号在评论列表里也留着，这一页不筛人')
+
         # 小明在一个女生的找对象帖底下举手，按相反的性别算
-        mingCard = page.locator('.xhsc-card', has_text='举手').first
-        check('男' in mingCard.inner_text(), '举手的评论者标了男 ' + mingCard.inner_text())
-        sexes = page.locator('.xhsc-tag.he, .xhsc-tag.she').count()
-        check(sexes >= 2, '帖主和评论者都标上了，实际 %d 个标签' % sexes)
+        ming = page.locator('.xhsc-crow', has_text='举手').first
+        check('男' in ming.inner_text(), '举手的评论者标了男 ' + ming.inner_text())
+        check(ming.locator('.xhsc-tag.he').count() == 1, '男标是那个固定的蓝')
         check(page.locator('.xhsc-tag.she').count() >= 1, '帖主是女的')
+
+        # 在举手的换个底色，这是一屏几百条里找人的唯一抓手
+        check('worth' in (ming.get_attribute('class') or ''), '举手的那条换了底色')
+        ad = page.locator('.xhsc-crow', has_text='加微信详聊').first
+        check('worth' not in (ad.get_attribute('class') or ''), '广告号不算在举手')
+
+        nums = page.locator('.xhsc-num').all_inner_texts()
+        check(len(nums) == 2, '两格数字条：全部和在举手')
+        check('2' in nums[0] and '全部' in nums[0], '全部两条 ' + nums[0])
+        check('1' in nums[1] and '在举手' in nums[1], '在举手一条 ' + nums[1])
+        page.locator('.xhsc-num', has_text='在举手').click()
+        page.wait_for_timeout(500)
+        check(page.locator('.xhsc-crow').count() == 1, '只看在举手的')
+        check('加微信详聊' not in page.inner_text('.xhsc-body'), '广告号被筛掉了')
+        page.locator('.xhsc-num', has_text='全部').click()
+        page.wait_for_timeout(500)
+
+        print('点一条评论就是回复他')
+        check('在帖子底下留言' in page.inner_text('.xhsc-foot'), '什么都不选就是留言')
+        page.locator('.xhsc-crow', has_text='举手').first.click()
+        page.wait_for_timeout(500)
+        foot = page.inner_text('.xhsc-foot')
+        check('回复 小明' in foot, '选中之后底下写着回复谁 ' + foot)
+        first = page.input_value('.xhsc-foot textarea')
+        check(len(first) > 6, '话已经预填好了 ' + first)
+        check('185' in first, '预填的是照他那句话生成的 ' + first)
+        check('on' in (page.locator('.xhsc-crow', has_text='举手')
+                       .first.get_attribute('class') or ''), '选中的那条描了边')
+
+        page.locator('.xhsc-foot button', has_text='换一句').click()
+        page.wait_for_timeout(400)
+        second = page.input_value('.xhsc-foot textarea')
+        check(second != first, '换一句真换了 ' + second)
+        page.locator('.xhsc-foot button', has_text='取消').click()
+        page.wait_for_timeout(400)
+        check('在帖子底下留言' in page.inner_text('.xhsc-foot'), '取消之后回到留言')
+        check(page.locator('.xhsc-crow.on').count() == 0, '选中的边也撤了')
+
         page.locator('.xhsc-body button', has_text='返回').click()
         page.wait_for_timeout(500)
         check(page.locator('.xhsc-card').count() >= 1, '返回回得到列表')
+        check(page.locator('.xhsc-foot').count() == 0, '返回之后输入区也收走')
 
         print('私信记录')
         page.click('.xhsc-tab >> nth=3')

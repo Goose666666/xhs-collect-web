@@ -207,6 +207,11 @@ function hookLine(text) {
   return '';
 }
 
+// 能接上对方原话的那半句。回复里带上它，才像读过他说的话写的。
+function echoOf(text) {
+  return hookLine(text);
+}
+
 const kStateWords = ['在实习', '刚工作', '工作稳定', '在上班', '刚毕业'];
 const kStudyWords = ['在读考研', '大四准备考研', '研一在读', '还在读书'];
 const kAskWords = ['可以联系下吗', '方便联系下吗', '可以认识下吗', '能加个联系方式吗'];

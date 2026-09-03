@@ -88,9 +88,33 @@ const PANEL_CSS = `
   font-size: 12px; background: #f2f2f4; color: #666; }
 .xhsc-tag.hot { background: var(--xc-soft); color: var(--xc-accent); }
 .xhsc-tag.bad { background: #ffe9e9; color: #c62828; }
-/* 男女各给一个颜色。一屏评论扫过去，靠颜色比靠读字快得多。 */
-.xhsc-tag.he { background: #e8eef4; color: #5b7c99; }
-.xhsc-tag.she { background: #fcf0ee; color: #d94a3d; }
+/* 男女各给一个颜色，一屏评论扫过去靠颜色比靠读字快得多。
+   这两个颜色是写死的，不跟着平台主色走：主色在小红书是红、抖音是黑，
+   跟着走的话女标在小红书跟别的红字混在一起，男标到了抖音又跟主色撞。 */
+.xhsc-tag.he { background: rgba(63,114,184,.12); color: #3f72b8; }
+.xhsc-tag.she { background: rgba(200,90,134,.12); color: #c85a86; }
+/* 评论行。在举手的换个底色，选中要回复的再描一圈边。 */
+.xhsc-crow { border: 1px solid #eee; border-radius: 12px; padding: 11px 14px;
+  margin-bottom: 8px; cursor: pointer; }
+.xhsc-crow.worth { background: var(--xc-soft); border-color: transparent; }
+.xhsc-crow.on { border: 2px solid var(--xc-accent); padding: 10px 13px; }
+.xhsc-crow .top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.xhsc-crow .top .name { font-size: 14px; font-weight: 600; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xhsc-crow p { margin: 0; font-size: 14px; line-height: 1.6; }
+.xhsc-grid { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.xhsc-more { border: none; background: none; color: var(--xc-accent);
+  font-size: 13.5px; cursor: pointer; padding: 4px 0; }
+.xhsc-topbar { display: flex; justify-content: space-between;
+  align-items: center; margin-bottom: 8px; }
+.xhsc-foot.col { flex-direction: column; align-items: stretch; gap: 8px; }
+.xhsc-foot .who { display: flex; align-items: center; gap: 4px; font-size: 13px;
+  font-weight: 600; color: #999; }
+.xhsc-foot .who b { flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.xhsc-foot .who button { border: none; background: none; color: var(--xc-accent);
+  font-size: 13px; cursor: pointer; padding: 4px 8px; }
+.xhsc-send { display: flex; gap: 8px; align-items: flex-end; }
 .xhsc-time { font-size: 12px; color: #aaa; }
 .xhsc-mini { display: flex; gap: 8px; }
 .xhsc-mini button { flex: 1; height: 36px; border-radius: 9px; border: 1px solid #eee;
@@ -162,6 +186,18 @@ const UI = {
   sentOnlyOk: false,
   // 帖子页正在看哪一篇。空的时候看的是列表。
   note: null,
+  // 正文摊开了没有。有的帖子正文很长，全摊开要占三四屏，
+  // 评论被顶到看不见的地方，而人进这一页是来看评论的。
+  noteFull: false,
+  // 只看在举手的那些人
+  noteWorth: false,
+  // 这条评论要回复谁。空着就是直接在帖子底下留言。
+  replyTo: '',
+  replyAt: null,
+  // 换过几次。每换一次就往后取一句，不然点几下都是同一句。
+  nonce: 0,
+  // 输入框里的话。面板整块重画，不存着就打一半没了。
+  draft: '',
 };
 
 function el(tag, cls, html) {
@@ -494,95 +530,139 @@ function noteMeta(n) {
   return row;
 }
 
-// 一篇帖子和它底下的评论。
+// 一篇帖子和它底下的评论，摆法跟手机版那一页一样。
+//
+// 帖子正文和评论在同一条滚动里，跟平台上看帖的顺序一致：先看这篇讲什么，
+// 再往下翻评论。评论区里在举手的那些人会被标出来，一条条自己读几百条找人，
+// 是这件事里最费时间的一步。
 //
 // 每条评论后面标了男女。红娘看一屏评论最先要分的就是男女，
 // 不标的话得逐个点进主页看，一篇几十条评论根本看不过来。
 async function renderNoteDetail(b, n) {
-  const back = el('div', 'xhsc-btns');
-  const bk = el('button', 'xhsc-btn ghost', '返回');
+  // 顶上这一条做成细的。两个大按钮横在这儿，帖子和评论就被顶下去一屏，
+  // 而人进这一页是来看评论的。
+  const bar = el('div', 'xhsc-topbar');
+  const bk = el('button', 'xhsc-more', '返回');
   bk.addEventListener('click', () => {
     UI.note = null;
+    clearReply();
     renderBody();
   });
-  const open = el('button', 'xhsc-btn ghost', '打开原帖');
+  const open = el('button', 'xhsc-more', '原帖');
   open.addEventListener('click', () => {
     const u = viewUrl(n);
     if (u) window.open(u, '_blank');
   });
-  back.appendChild(bk);
-  back.appendChild(open);
-  b.appendChild(back);
+  bar.appendChild(bk);
+  bar.appendChild(open);
+  b.appendChild(bar);
+  b.appendChild(notePost(n));
 
+  const all = (await getAll('comments')).filter((c) => c.note_id === n.note_id);
+  const noteText = (asText(n.title) + ' ' + asText(n.content)).trim();
+  const rows = orderComments(all).map((c) => ({
+    row: c,
+    sex: guessGender(c.nickname, c.content, noteText),
+    intent: judgePerson(c.nickname, c.content),
+  }));
+  for (const one of rows) {
+    one.worth = one.intent === INTENT_HIGH || one.intent === INTENT_MID;
+  }
+  const worth = rows.filter((one) => one.worth).length;
+
+  // 数字条本身就是筛选，点哪个看哪些
+  const nums = el('div', 'xhsc-nums');
+  const mk = (on, label, count, fn) => {
+    const one = el('div', 'xhsc-num' + (on ? ' on' : ''),
+      '<b>' + count + '</b><span>' + label + '</span>');
+    one.addEventListener('click', fn);
+    return one;
+  };
+  nums.appendChild(mk(!UI.noteWorth, '全部', rows.length, () => {
+    UI.noteWorth = false;
+    renderBody();
+  }));
+  nums.appendChild(mk(UI.noteWorth, '在举手', worth, () => {
+    UI.noteWorth = true;
+    renderBody();
+  }));
+  b.appendChild(nums);
+
+  const shown = UI.noteWorth ? rows.filter((one) => one.worth) : rows;
+  if (!shown.length) {
+    b.appendChild(el('div', 'xhsc-empty',
+      rows.length ? '这篇底下没人在举手' : '这篇没有采到评论'));
+  }
+  for (const one of shown) b.appendChild(commentRow(one, n));
+
+  replyBox(n);
+}
+
+// 帖子本身：标题、作者、图、正文。
+function notePost(n) {
   const card = el('div', 'xhsc-card');
   card.appendChild(el('div', 'xhsc-name',
     esc(n.title || head(n.content, 24) || '无标题')));
   card.appendChild(noteMeta(n));
+
   // 采到的图全摆出来，一篇帖子的图往往比正文更能说明这个人什么样
   const pics = asText(n.images).split(' | ').filter(Boolean);
   const shots = pics.length ? pics : [asText(n.cover)].filter(Boolean);
   if (shots.length) {
-    const strip = el('div', 'xhsc-who');
+    const grid = el('div', 'xhsc-grid');
     for (const u of shots.slice(0, 9)) {
-      const im = coverImg(u, 78);
-      if (im) strip.appendChild(im);
+      const im = coverImg(u, 88);
+      if (im) grid.appendChild(im);
     }
-    card.appendChild(strip);
-  }
-  if (n.content) card.appendChild(el('p', '', esc(n.content)));
-  b.appendChild(card);
-
-  const all = (await getAll('comments')).filter((c) => c.note_id === n.note_id);
-  if (!all.length) {
-    b.appendChild(el('div', 'xhsc-empty', '这篇没有采到评论'));
-    return;
+    card.appendChild(grid);
   }
 
-  const noteText = (asText(n.title) + ' ' + asText(n.content)).trim();
-  // 一级按点赞排，各自的回复紧跟在后面，跟平台上看到的顺序一致
+  const body = asText(n.content);
+  if (body) {
+    const p = el('p', '', esc(UI.noteFull ? body : head(body, 120)));
+    card.appendChild(p);
+    // 正文长的默认收着，人进这一页是来看评论的
+    if (body.length > 120) {
+      const more = el('button', 'xhsc-more', UI.noteFull ? '收起' : '看全文');
+      more.addEventListener('click', () => {
+        UI.noteFull = !UI.noteFull;
+        renderBody();
+      });
+      card.appendChild(more);
+    }
+  }
+  return card;
+}
+
+// 一级按点赞排，各自的回复紧跟在后面，跟平台上看到的顺序一致。
+function orderComments(all) {
   const tops = all.filter((c) => !c.parent_id)
-    .sort((a, b2) => asInt(b2.likes) - asInt(a.likes));
+    .sort((a, b) => asInt(b.likes) - asInt(a.likes));
   const kids = {};
   for (const c of all) {
     if (!c.parent_id) continue;
     if (!kids[c.parent_id]) kids[c.parent_id] = [];
     kids[c.parent_id].push(c);
   }
-  const shown = new Set();
+  const out = [];
+  const seen = new Set();
   for (const t of tops) {
-    b.appendChild(commentCard(t, n, noteText, false));
-    shown.add(t.comment_id);
+    out.push(t);
+    seen.add(t.comment_id);
     for (const s of kids[t.comment_id] || []) {
-      b.appendChild(commentCard(s, n, noteText, true));
-      shown.add(s.comment_id);
+      out.push(s);
+      seen.add(s.comment_id);
     }
   }
   // 父评论没采到的回复别丢，单独挂在后面，不然评论数对不上
   for (const c of all) {
-    if (!shown.has(c.comment_id)) b.appendChild(commentCard(c, n, noteText, true));
+    if (!seen.has(c.comment_id)) out.push(c);
   }
+  return out;
 }
 
-function commentCard(c, n, noteText, isSub) {
-  const sex = guessGender(c.nickname, c.content, noteText);
-  const card = el('div', 'xhsc-card');
-  if (isSub) card.style.marginLeft = '22px';
-
-  const who = el('div', 'xhsc-who');
-  who.appendChild(avatar(c.nickname));
-  who.appendChild(el('div', 'xhsc-name', esc(c.nickname || '匿名')));
-  if (sex) who.appendChild(sexTag(sex));
-  if (c.ip_location) who.appendChild(el('span', 'xhsc-tag', esc(c.ip_location)));
-  if (asInt(c.likes) > 0) {
-    who.appendChild(el('span', 'xhsc-tag', '赞 ' + asInt(c.likes)));
-  }
-  if (c.comment_time) {
-    who.appendChild(el('span', 'xhsc-time', esc(asText(c.comment_time).slice(0, 16))));
-  }
-  card.appendChild(who);
-  card.appendChild(el('p', '', esc(c.content)));
-
-  const person = {
+function personOf(c, n, sex) {
+  return {
     kind: '评论者',
     user_id: c.user_id,
     nickname: c.nickname,
@@ -595,32 +675,134 @@ function commentCard(c, n, noteText, isSub) {
     trade: asTrade(c.trade),
     sex: sex,
   };
-  const talk = draftFor(person);
+}
 
-  const mini = el('div', 'xhsc-mini');
-  if (canOpenProfile(c.user_id)) {
-    const dm = el('button', '', '私信');
-    dm.addEventListener('click', () => launchSend([person], '私信'));
-    mini.appendChild(dm);
+function commentRow(one, n) {
+  const c = one.row;
+  const on = UI.replyAt === c.comment_id;
+  const card = el('div', 'xhsc-crow' + (one.worth ? ' worth' : '') +
+    (on ? ' on' : ''));
+  if (c.parent_id) card.style.marginLeft = '22px';
+
+  const top = el('div', 'top');
+  top.appendChild(avatar(c.nickname));
+  top.appendChild(el('div', 'name', esc(c.nickname || '匿名')));
+  if (one.sex) top.appendChild(sexTag(one.sex));
+  if (c.ip_location) {
+    top.appendChild(el('span', 'xhsc-time', esc(c.ip_location)));
   }
-  const re = el('button', '', '回复');
-  re.addEventListener('click', () =>
-    launchSend([Object.assign({}, person, { text: talk })], '评论'));
-  mini.appendChild(re);
-  const copy = el('button', '', '复制话术');
-  copy.addEventListener('click', async () => {
-    await copyText(talk);
-    copy.textContent = '已复制';
+  card.appendChild(top);
+  card.appendChild(el('p', '', esc(c.content)));
+
+  // 点一条就是要回复这个人。这是整件事的落点：
+  // 在举手的人底下接一句，比在帖子底下贴一条被看见的机会大得多。
+  card.addEventListener('click', () => {
+    if (on) {
+      clearReply();
+    } else {
+      UI.replyAt = c.comment_id;
+      UI.replyTo = asText(c.nickname);
+      UI.nonce = 0;
+      UI.draft = draftFor({
+        said: c.content,
+        who: asText(c.user_id) || asText(c.nickname),
+        where: c.ip_location,
+      });
+      UI.person = personOf(c, n, one.sex);
+    }
+    renderBody();
   });
-  mini.appendChild(copy);
-  const ban = el('button', '', '拉黑');
-  ban.addEventListener('click', async () => {
-    await blockUser(c.user_id, c.nickname, '手动拉黑');
-    card.remove();
-  });
-  mini.appendChild(ban);
-  card.appendChild(mini);
   return card;
+}
+
+function clearReply() {
+  UI.replyAt = null;
+  UI.replyTo = '';
+  UI.person = null;
+  UI.draft = '';
+  UI.nonce = 0;
+}
+
+// 底部那块输入区。选中某条评论就是回复他，什么都不选就是在帖子底下留言。
+function replyBox(n) {
+  const f = foot(true);
+  f.classList.add('col');
+
+  const who = el('div', 'who');
+  who.appendChild(el('b', '', UI.replyTo ? esc('回复 ' + UI.replyTo) : '在帖子底下留言'));
+  if (UI.replyTo) who.firstChild.style.color = 'var(--xc-accent)';
+
+  if (UI.replyAt) {
+    const again = el('button', '', '换一句');
+    again.addEventListener('click', () => {
+      UI.nonce += 1;
+      const p = UI.person || {};
+      UI.draft = draftFor({
+        said: p.said,
+        who: asText(p.user_id) || asText(p.nickname),
+        where: p.ip_location,
+        nonce: UI.nonce,
+      });
+      renderBody();
+    });
+    who.appendChild(again);
+  }
+  const talks = el('button', '', '话术');
+  talks.addEventListener('click', () => {
+    const list = draftTalks();
+    if (!list.length) {
+      say('先去设置里写几条评论话术');
+      return;
+    }
+    UI.nonce += 1;
+    UI.draft = list[UI.nonce % list.length];
+    renderBody();
+  });
+  who.appendChild(talks);
+  if (UI.replyTo) {
+    const x = el('button', '', '取消');
+    x.addEventListener('click', () => {
+      clearReply();
+      renderBody();
+    });
+    who.appendChild(x);
+  }
+  f.appendChild(who);
+
+  const line = el('div', 'xhsc-send');
+  const ta = el('textarea');
+  ta.value = UI.draft;
+  ta.placeholder = UI.replyTo ? '回复 ' + UI.replyTo : '写一条评论';
+  ta.style.height = '44px';
+  ta.addEventListener('input', () => {
+    UI.draft = ta.value;
+  });
+  const send = el('button', 'xhsc-btn', '发送');
+  send.style.flex = 'none';
+  send.addEventListener('click', () => {
+    const text = ta.value.trim();
+    if (!text) {
+      say('先写一句话');
+      return;
+    }
+    const p = UI.person || {
+      kind: '帖主',
+      user_id: n.author_id,
+      nickname: '',
+      said: (asText(n.title) + ' ' + asText(n.content)).trim(),
+      note_id: n.note_id,
+      xsec_token: n.xsec_token,
+      note_url: n.note_url,
+      site: asSite(n.site),
+      trade: asTrade(n.trade),
+    };
+    // 帖主那条不带昵称，脚本只找公共评论框；
+    // 回复某个人要带昵称，脚本会去评论区找他那条评论点回复。
+    launchSend([Object.assign({}, p, { text: text })], '评论');
+  });
+  line.appendChild(ta);
+  line.appendChild(send);
+  f.appendChild(line);
 }
 
 // ---------- 人页 ----------
@@ -636,8 +818,14 @@ async function loadPeople() {
   return _peopleCache;
 }
 
-function draftFor(p) {
-  return makeReply(p.said, p.user_id, p.ip_location);
+// 给名单上的一个人写一句话。走的是跟评论区回复同一个出话口子，
+// 两处出的话必须一样，不然同一个人在两个页面上看到两句不同的话。
+function talkFor(p) {
+  return draftFor({
+    said: p.said,
+    who: asText(p.user_id) || asText(p.nickname),
+    where: p.ip_location,
+  });
 }
 
 // 从一批人里挑出真正发得出去的。
@@ -774,7 +962,7 @@ function personCard(p) {
   c.appendChild(who);
   c.appendChild(el('p', '', esc(head(p.said, 150))));
 
-  const talk = draftFor(p);
+  const talk = talkFor(p);
   c.appendChild(el('p', 'xhsc-talk', esc(talk)));
 
   const mini = el('div', 'xhsc-mini');
@@ -839,7 +1027,7 @@ function personCard(p) {
 // ---------- 发送 ----------
 
 async function launchSend(people, kind) {
-  const list = people.map((p) => Object.assign({}, p, { text: p.text || draftFor(p) }));
+  const list = people.map((p) => Object.assign({}, p, { text: p.text || talkFor(p) }));
   // 单发之前看看是不是紧挨着上一条。
   //
   // 只拦一件事：两条贴在一起发。真人再快也要看一眼再点，

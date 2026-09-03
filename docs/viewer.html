@@ -256,7 +256,12 @@
   }
 
   function personCard(p) {
-    const talk = X.makeReply(p.said, p.user_id, p.ip_location);
+    // 走的是跟面板同一个出话口子，两处对同一个人出的话必须一样
+    const talk = X.draftFor({
+      said: p.said,
+      who: X.asText(p.user_id) || X.asText(p.nickname),
+      where: p.ip_location,
+    });
     const c = document.createElement('div');
     c.className = 'card';
     c.innerHTML =
