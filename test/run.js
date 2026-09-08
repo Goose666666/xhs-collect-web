@@ -10,7 +10,8 @@ const vm = require('vm');
 const root = path.join(__dirname, '..');
 const files = ['10-util.js', '20-parse.js', '22-douyin.js',
   '40-industry.js', '45-limits.js', '50-funnel.js', '55-reply.js',
-  '57-draft.js', '58-ai.js', '58-csv.js'];
+  '57-draft.js', '58-ai.js', '58-csv.js',
+  '59-inbox.js'];
 
 // 这几块不碰浏览器，给个空壳就能跑
 const shim = `
@@ -32,7 +33,7 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
   'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl, ' +
-  'tooOld, AI, draftFor, draftMany };', ctx);
+  'tooOld, AI, draftFor, draftMany, looksLikeReply };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -561,6 +562,18 @@ group('模型筛人', () => {
 });
 
 // ---------- 没密钥也要出话 ----------
+
+// ---------- 谁回我了 ----------
+
+group('谁回我了', () => {
+  const mine = '我成都，在上班，185，可以联系下吗';
+  ok(!A.looksLikeReply(mine, mine), '还是我那句，就是没人理');
+  ok(A.looksLikeReply('好呀，你多大', mine), '换了一句就是他接话了');
+  ok(!A.looksLikeReply('我成都，在上班，185，可以联系…', mine),
+    '列表上截断带省略号的还是我那句');
+  ok(!A.looksLikeReply('', mine), '读不到最后一句就不算回了');
+  ok(A.looksLikeReply('在吗', ''), '我没发过，那这句就是他主动来的');
+});
 
 // 这一组只验没密钥那条路。填了密钥要发真请求，测试里不发。
 async function noKeyGroup() {

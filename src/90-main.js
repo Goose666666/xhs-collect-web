@@ -26,6 +26,7 @@ async function boot() {
     await Limits.loadBatch();
     Runtime.job = (await getJob()) || null;
     Sender.job = (await getSendJob()) || null;
+    Sync.job = (await getSyncJob()) || null;
   } catch (e) {
     // 库开不了。无痕模式、空白页、以及浏览器设了禁止网站存数据时都是这样。
     // 不在平台页面上就安静退出；在的话得把话说清楚，
@@ -42,7 +43,8 @@ async function boot() {
   mountPanel();
 
   const busyNow = () =>
-    !!(Runtime.job && Runtime.job.running) || !!(Sender.job && Sender.job.running);
+    !!(Runtime.job && Runtime.job.running) || !!(Sender.job && Sender.job.running) ||
+    !!(Sync.job && Sync.job.running);
 
   let wasBusy = null;
   const onAny = () => {
@@ -59,12 +61,15 @@ async function boot() {
   };
   Runtime.onChange = onAny;
   Sender.onChange = onAny;
+  Sync.onChange = onAny;
 
   wasBusy = busyNow();
   if (wasBusy) {
     UI.fab.textContent = '跑着呢';
     // 发送时默认停在人页，那一页就是发送进度
     if (Sender.job && Sender.job.running) UI.tab = '人';
+    // 同步是在消息页上跑的，停在私信那一页才看得见收了多少
+    if (Sync.job && Sync.job.running) UI.tab = '消息';
     togglePanel(true);
     for (const o of UI.panel.querySelectorAll('.xhsc-tab')) {
       o.classList.toggle('on', o.textContent === UI.tab);
@@ -78,6 +83,7 @@ async function boot() {
   // 两台状态机都靠跳页面推进，同时跑会互相把页面抢走，所以一次只让一台动。
   // 发送优先：它是一条一条留痕的，被打断的代价比采集大得多。
   if (Sender.job && Sender.job.running) await driveSend();
+  else if (Sync.job && Sync.job.running) await driveSync();
   else await drive();
 }
 
@@ -119,6 +125,14 @@ window.__xhs = {
   makeReply: makeReply,
   AI: AI,
   draftMany: draftMany,
+  Sync: Sync,
+  startSync: startSync,
+  stopSync: stopSync,
+  driveSync: driveSync,
+  inboxList: inboxList,
+  addInboxAll: addInboxAll,
+  readInboxRows: readInboxRows,
+  readNoticeRows: readNoticeRows,
   renderBody: renderBody,
   siteNow: siteNow,
   UI: UI,

@@ -33,6 +33,7 @@ function allowedConsole(origin) {
 async function bridgeStatus() {
   const job = Runtime.job || {};
   const send = Sender.job || {};
+  const sync = Sync.job || {};
   const c = await counts();
   return {
     site: siteNow(),
@@ -68,6 +69,12 @@ async function bridgeStatus() {
       message: asText(send.message),
       stats: send.stats || {},
       log: (send.log || []).slice(-30),
+    },
+    sync: {
+      running: !!sync.running,
+      got: asInt(sync.got),
+      message: asText(sync.message),
+      log: (sync.log || []).slice(-30),
     },
   };
 }
@@ -119,6 +126,23 @@ async function bridgeHandle(msg) {
 
     case 'sent':
       return { rows: await sentList(300, Trade.now.key) };
+
+    case 'inbox':
+      return {
+        rows: await inboxList({
+          kind: asText(msg.kind),
+          trade: Trade.now.key,
+          limit: 300,
+        }),
+        counts: await inboxCounts(Trade.now.key),
+      };
+
+    case 'startSync':
+      return await startSync();
+
+    case 'stopSync':
+      await stopSync();
+      return { ok: true };
 
     case 'startCollect':
       await startCollect({

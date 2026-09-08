@@ -101,6 +101,23 @@ MODEL_EXPORT = {
     },
 }
 
+# 取新消息那一段自己的数据。每开一个页面就是一份独立的库，
+# 前面发私信那一段留下的流水在这一页里看不到，得自己铺一条。
+SYNC_EXPORT = {
+    "version": 1,
+    "exported_at": "2026-09-02 12:00:00",
+    "tables": {
+        "notes": [], "comments": [], "keywords": [], "settings": [],
+        "tasks": [], "inbox": [],
+        "touches": [{
+            "kind": "私信", "nickname": "小明", "user_id": "u2",
+            "text": "我成都，在上班，185，可以联系下吗",
+            "status": "成功", "detail": "", "created_at": "2026-09-01 10:00:00",
+            "site": "小红书", "trade": "love",
+        }],
+    },
+}
+
 PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>假的小红书</title></head><body>
 <h1>假的小红书</h1>
@@ -153,6 +170,72 @@ document.getElementById('im').addEventListener('click', function () {
     box.textContent = '';
   });
 });
+</script>
+</body></html>"""
+
+# 假的私信页。会话列表：一条是昵称、最后一句、时间三行。
+# 类名照真页面写，读的时候先按类名找。
+CHAT = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>私信</title></head><body>
+<div class="conversationConversationList">
+  <div class="conversationConversationItem">
+    <div>小明</div><div>好呀，你多大</div><div>18:29</div>
+  </div>
+  <div class="conversationConversationItem">
+    <div>路过的</div><div>在吗</div><div>昨天</div>
+  </div>
+  <div class="conversationConversationItem">
+    <div>小九</div><div>我也在成都183有房，认识下吗</div><div>前天</div>
+  </div>
+</div>
+</body></html>"""
+
+# 假的通知页。两栏：评论和@、赞和收藏，点了才换。
+#
+# 一条通知的形状照真页面：昵称一行，那句说明和时间粘在一行，
+# 后面是他说的话和被他针对的我那一条。
+NOTICE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>通知</title></head><body>
+<div class="tabs">
+  <div id="t1" class="tab active"
+       style="display:inline-block;width:96px;height:34px">评论和@</div>
+  <div id="t2" class="tab"
+       style="display:inline-block;width:96px;height:34px">赞和收藏</div>
+</div>
+<div id="list" class="noticeList"></div>
+<script>
+var DATA = {
+  t1: [['爱吃辣的鱼', '回复了你的评论昨天 18:48', '你在成都哪个区',
+        '我成都，在上班，185，可以联系下吗', '/explore/n0001', '/user/profile/u21']],
+  t2: [['富贵迷人眼', '赞了你的笔记昨天 18:48', '',
+        '我成都，在上班，185，可以联系下吗', '/explore/n0001', '/user/profile/u22']]
+};
+function draw(which) {
+  var box = document.getElementById('list');
+  box.innerHTML = '';
+  DATA[which].forEach(function (r) {
+    var d = document.createElement('div');
+    d.className = 'noticeItem';
+    var lines = [r[0], r[1]];
+    if (r[2]) lines.push(r[2]);
+    lines.push(r[3]);
+    d.innerHTML = lines.map(function (x) { return '<div>' + x + '</div>'; }).join('') +
+      '<a href="' + r[5] + '"><img alt="" width="20" height="20"></a>' +
+      '<a href="' + r[4] + '"><img alt="" width="20" height="20"></a>';
+    box.appendChild(d);
+  });
+}
+document.getElementById('t1').addEventListener('click', function () {
+  document.getElementById('t1').className = 'tab active';
+  document.getElementById('t2').className = 'tab';
+  draw('t1');
+});
+document.getElementById('t2').addEventListener('click', function () {
+  document.getElementById('t2').className = 'tab active';
+  document.getElementById('t1').className = 'tab';
+  draw('t2');
+});
+draw('t1');
 </script>
 </body></html>"""
 
@@ -216,8 +299,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._send(json.dumps(SEARCH), 'application/json')
         if self.path.startswith('/profile'):
             return self._send(PROFILE, 'text/html; charset=utf-8')
+        if self.path.startswith('/notification'):
+            return self._send(NOTICE, 'text/html; charset=utf-8')
         if self.path.startswith('/note'):
             return self._send(NOTE, 'text/html; charset=utf-8')
+        if self.path.startswith('/chat'):
+            return self._send(CHAT, 'text/html; charset=utf-8')
         if self.path.startswith('/fake'):
             return self._send(PAGE, 'text/html; charset=utf-8')
         return super().do_GET()
@@ -287,7 +374,7 @@ def main():
         check(page.is_visible('.xhsc-panel'), '面板打开了')
         check(page.locator('.xhsc-tab').count() == 5, '五个页签，跟手机版一样')
         tabs = page.locator('.xhsc-tab').all_text_contents()
-        check(tabs == ['采集', '帖子', '人', '私信', '设置'], '页签的名字和顺序 ' + str(tabs))
+        check(tabs == ['采集', '帖子', '人', '消息', '设置'], '页签的名字和顺序 ' + str(tabs))
         check(page.locator('.xhsc-chip').count() >= 8, '行业的预置关键词铺出来了')
 
         print('选词')
@@ -644,6 +731,23 @@ def main():
         con.click('.tabs button[data-tab=sent]')
         con.wait_for_timeout(1200)
         check('还没发过私信' in con.inner_text('#pane-sent'), '私信记录')
+        views = con.locator('#pane-sent .tabs button').all_text_contents()
+        check(len(views) == 4, '消息页也分四档 ' + str(views))
+        check('取新消息' in con.inner_text('#pane-sent'), '控制台上也能取新消息')
+        # 别人找过来的那三类是这一页真正要看的东西
+        work.evaluate("""async () => {
+          await window.__xhs.addInboxAll([{
+            who: '爱吃辣的鱼', kind: '回复', text: '你在成都哪个区',
+            mine: '我成都，在上班，185，可以联系下吗',
+            about: '回复了你的评论', link: '/explore/n0001',
+            user_id: 'u21', site: '小红书', trade: 'love',
+          }]);
+        }""")
+        con.locator('#pane-sent .tabs button', has_text='回复我的').click()
+        con.wait_for_timeout(1200)
+        itext = con.inner_text('#pane-sent')
+        check('爱吃辣的鱼' in itext, '回复我的那一档是那边给的 ' + itext[:60])
+        check('回复了你的评论' in itext, '那句原话也带回来了')
 
         con.click('.tabs button[data-tab=setting]')
         con.wait_for_timeout(1200)
@@ -737,6 +841,79 @@ def main():
         check('183' in mbubble, '发出去的是模型写的那句 ' + mbubble)
         check(not merrs, '模型这一路没有报错 ' + str(merrs))
         m.evaluate("async () => { await window.__xhs.AI.save(''); }")
+
+        print('取新消息')
+        # 一趟要走两个页面：私信页和通知页。换页面靠的是真跳转，
+        # 跳出去就换了域名，本地库跟着换一个，测试里过不去。
+        # 所以这儿按真跳转之后的样子分两段跑：每段自己打开页面再推一把，
+        # 跟脚本被重新加载起来接着跑是同一条路。
+        y = b.new_page(viewport={'width': 390, 'height': 844})
+        yerrs = []
+        y.on('pageerror', lambda e: yerrs.append(str(e)))
+        # 读完私信那一站，脚本会自己往真的通知页跳。这儿把那一跳挡下来，
+        # 页面才留在原地，下面好接着查库。
+        y.route('https://www.xiaohongshu.com/**', lambda r: r.abort())
+        y.add_init_script(script)
+        y.goto(base + '/chat')
+        y.wait_for_selector('.xhsc-fab', timeout=5000)
+        y.evaluate("""async () => {
+          await window.__xhs.importAll(%s);
+        }""" % json.dumps(SYNC_EXPORT, ensure_ascii=False))
+        y.evaluate("async () => await window.__xhs.startSync()")
+        y.wait_for_function(
+            "() => !window.__xhs.Sync.job.running || window.__xhs.Sync.job.step > 0",
+            timeout=60000)
+        dm_rows = y.evaluate(
+            "async () => await window.__xhs.inboxList({ kind: '私信' })")
+        check(len(dm_rows) == 3, '三条会话都读回来了，实际 %d' % len(dm_rows))
+        whos = sorted([r['who'] for r in dm_rows])
+        check(whos == ['小九', '小明', '路过的'], '昵称 ' + str(whos))
+        one = [r for r in dm_rows if r['who'] == '小明'][0]
+        check(one['text'] == '好呀，你多大', '最后那句话 ' + one['text'])
+
+        # 他回的那句跟我发的那句不是同一句，流水上要记成回了
+        replied = y.evaluate("""async () => {
+          const all = await window.__xhs.exportAll();
+          return all.tables.touches.filter((t) => t.nickname === '小明')
+            .map((t) => !!t.replied);
+        }""")
+        check(any(replied), '对上了谁回我 ' + str(replied))
+
+        # 第二段：通知页。两栏各读一遍
+        y.goto(base + '/notification')
+        y.wait_for_selector('.xhsc-fab', timeout=5000)
+        y.evaluate("async () => await window.__xhs.driveSync()")
+        y.wait_for_function(
+            "() => !window.__xhs.Sync.job.running", timeout=60000)
+        back = y.evaluate("async () => await window.__xhs.inboxList({})")
+        kinds = sorted(set([r['kind'] for r in back]))
+        check(kinds == ['回复', '点赞', '私信'], '三类都收到了 ' + str(kinds))
+        rep = [r for r in back if r['kind'] == '回复'][0]
+        check(rep['who'] == '爱吃辣的鱼', '回复我的是谁 ' + rep['who'])
+        check(rep['text'] == '你在成都哪个区', '他说的话 ' + rep['text'])
+        check('185' in rep['mine'], '他冲我哪一条来的 ' + rep['mine'])
+        check(rep['about'] == '回复了你的评论', '照页面那句原话记 ' + rep['about'])
+        check(rep['user_id'] == 'u21', '他的账号 ' + rep['user_id'])
+        check('n0001' in rep['link'], '回得去那条帖子 ' + rep['link'])
+        like = [r for r in back if r['kind'] == '点赞'][0]
+        check(like['who'] == '富贵迷人眼', '点赞的是谁 ' + like['who'])
+        check(like['text'] == '', '点赞没有他说的话')
+        check('185' in like['mine'], '赞的是我哪一条 ' + like['mine'])
+
+        # 界面上分四档，收到的那几条要看得见
+        # 同步跑起来的时候面板是自动开着的，这时候再点悬浮按钮会被面板挡住
+        if not y.is_visible('.xhsc-panel'):
+            y.click('.xhsc-fab')
+        y.click('.xhsc-tab >> nth=3')
+        y.wait_for_timeout(600)
+        nums = y.locator('.xhsc-num').all_text_contents()
+        check(len(nums) == 4, '四档 ' + str(nums))
+        y.click('.xhsc-num >> nth=2')
+        y.wait_for_timeout(400)
+        seen = y.inner_text('.xhsc-body')
+        check('爱吃辣的鱼' in seen, '回复我的那一档里有他')
+        check('回复了你的评论' in seen, '那句原话也摆出来了')
+        check(not yerrs, '取新消息这一路没有报错 ' + str(yerrs))
 
         print('安装页')
         i = b.new_page()

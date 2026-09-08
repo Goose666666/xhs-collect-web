@@ -920,7 +920,7 @@ function canOpenProfile(userId) {
 // 省下一大堆游标代码，出错的地方也少。
 
 const DB_NAME = 'xhs_leads';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 // 一行数据存在哪张表，以及主键是哪一列。
 const STORES = {
@@ -930,8 +930,13 @@ const STORES = {
   settings: 'k',
   tasks: 'id',
   touches: 'id',
+  // 别人主动找过来的：私信我的、回复我的、给我点赞的
+  inbox: 'id',
   job: 'id',
 };
+
+// 库自己发号的那几张表。这些表没有天然主键。
+const AUTO_KEY = ['tasks', 'touches', 'inbox'];
 
 let _db = null;
 
@@ -945,7 +950,7 @@ function openDb() {
       for (const [name, key] of Object.entries(STORES)) {
         if (d.objectStoreNames.contains(name)) continue;
         // 任务和触达没有天然主键，让库自己发号
-        if (name === 'tasks' || name === 'touches') {
+        if (AUTO_KEY.indexOf(name) >= 0) {
           d.createObjectStore(name, { keyPath: key, autoIncrement: true });
         } else {
           d.createObjectStore(name, { keyPath: key });
@@ -1273,7 +1278,8 @@ async function clearJob() {
 // 整库导出成一份 JSON。拿去电脑上看，或者换台设备接着用。
 async function exportAll() {
   const out = { version: 1, exported_at: nowCst(), tables: {} };
-  for (const name of ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches']) {
+  for (const name of
+    ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches', 'inbox']) {
     out.tables[name] = await getAll(name);
   }
   return out;
@@ -1283,18 +1289,20 @@ async function exportAll() {
 async function importAll(data) {
   const tables = mapOf(mapOf(data).tables);
   let n = 0;
-  for (const name of ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches']) {
+  for (const name of
+    ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches', 'inbox']) {
     const rows = listOf(tables[name]);
     if (!rows.length) continue;
     // 自增主键的表，导进来的 id 可能跟本地撞车，去掉让库重新发号
-    const clean = (name === 'tasks' || name === 'touches')
+    const auto = AUTO_KEY.indexOf(name) >= 0;
+    const clean = auto
       ? rows.map((r) => {
         const c = Object.assign({}, r);
         delete c.id;
         return c;
       })
       : rows;
-    if (name === 'tasks' || name === 'touches') {
+    if (auto) {
       const d = await openDb();
       await new Promise((resolve, reject) => {
         const t = d.transaction(name, 'readwrite');
@@ -1426,6 +1434,98 @@ async function sentList(limit, trade) {
     });
   }
   return out;
+}
+
+// ---------- 别人找过来的 ----------
+//
+// 谁私信了我、谁回复了我、谁给我点了赞，这三样都在平台自己的消息页里，
+// 同步那一趟读回来存在这儿。
+//
+// 这批人是最该接着聊的：他们对我发的东西有反应，比评论区里的路人近得多。
+
+// 同一条读到几遍就只留一条。列表往下翻的时候上面那些会重复读到，
+// 人在同一个会话里说了新的一句才算新的一条。
+function inboxMark(r) {
+  return asText(r.kind) + '\u0001' + asText(r.who) + '\u0001' +
+    asText(r.text) + '\u0001' + asSite(r.site);
+}
+
+// 收一批。返回真正新增了几条。
+async function addInboxAll(rows) {
+  const list = (rows || []).filter((r) => asText(r.who));
+  if (!list.length) return 0;
+  const old = await getAll('inbox');
+  const seen = new Set(old.map(inboxMark));
+  const fresh = [];
+  for (const r of list) {
+    const row = {
+      who: asText(r.who),
+      kind: asText(r.kind),
+      text: asText(r.text),
+      // mine 是被他针对的那一条，也就是我自己发的
+      mine: asText(r.mine),
+      about: asText(r.about),
+      link: asText(r.link),
+      user_id: asText(r.user_id),
+      site: asSite(r.site),
+      trade: asTrade(r.trade),
+      got_at: nowCst(),
+    };
+    const mark = inboxMark(row);
+    if (seen.has(mark)) continue;
+    seen.add(mark);
+    fresh.push(row);
+  }
+  if (!fresh.length) return 0;
+  // 一批一个事务。一条一条写的话，读一屏就是几十次落盘，界面跟着卡。
+  const d = await openDb();
+  await new Promise((resolve, reject) => {
+    const t = d.transaction('inbox', 'readwrite');
+    const s = t.objectStore('inbox');
+    for (const r of fresh) s.add(r);
+    t.oncomplete = resolve;
+    t.onerror = () => reject(t.error);
+  });
+  return fresh.length;
+}
+
+// 新的排前面。kind 给了就只看那一类。
+async function inboxList(opt) {
+  const o = opt || {};
+  let all = await getAll('inbox');
+  all = all.sort((a, b) => asInt(b.id) - asInt(a.id));
+  if (o.kind) all = all.filter((r) => r.kind === o.kind);
+  if (o.site) all = all.filter((r) => asSite(r.site) === o.site);
+  if (o.trade) all = all.filter((r) => asTrade(r.trade) === o.trade);
+  return o.limit ? all.slice(0, o.limit) : all;
+}
+
+async function inboxCounts(trade) {
+  const all = await inboxList({ trade: trade });
+  const out = { 私信: 0, 回复: 0, 点赞: 0 };
+  for (const r of all) {
+    if (out[r.kind] !== undefined) out[r.kind] += 1;
+  }
+  return out;
+}
+
+async function clearInbox() {
+  await clearStore('inbox');
+}
+
+// 这个人回我了。发过的那条流水上记一笔，名单上就能看出谁搭理了。
+async function markReplied(nickname, said) {
+  const who = asText(nickname);
+  if (!who) return false;
+  const all = await getAll('touches');
+  const mine = all
+    .filter((t) => t.kind === '私信' && asText(t.nickname) === who)
+    .sort((a, b) => asInt(b.id) - asInt(a.id))[0];
+  if (!mine || mine.replied) return false;
+  mine.replied = 1;
+  mine.reply_text = asText(said);
+  await putOne('touches', mine);
+  return true;
 }
 
 
@@ -3216,6 +3316,297 @@ function download(name, text, mime) {
 }
 
 
+// ===== 59-inbox.js =====
+// 从平台自己的消息页上读别人找过来的那些。
+//
+// 谁私信了我、谁回复了我、谁给我点了赞，这三样只在平台的消息中心和
+// 通知页里，接口那条路读不到。这一段就是照着页面读。
+//
+// 逐条照手机版 lib/local/poster.dart 里那几段脚本写。手机版是把脚本
+// 塞进网页控件里跑，网页版本来就跑在页面里，直接读就行。
+
+// 一条会话或者一条通知上的时间长什么样。
+//
+// 时间不单独占一行。实测一条是这样两行：
+//   富贵迷人眼
+//   赞了你的笔记昨天 18:48
+// 说明和时间粘在一起，按整行比时间的话一条都认不出来，
+// 所以只要行里带时间就算。
+const STAMP = /(刚刚|昨天|前天|今天|星期.|周.|[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}[-月][0-9]{1,2}日?|[0-9]+ ?(分钟|小时|天|周|月|个月|年)前)/;
+
+// 整行就是个时间的，那一行没内容，读的时候要扔掉。
+const CLOCK = new RegExp('^' + STAMP.source + '$');
+
+// 通知里那句说明。赞和回复的写法各家不同，都认一遍。
+const NOTICE_KEY = /赞了你|点赞了你|赞了我|收藏了你|收藏了|回复了|回复你|评论了你|@了你|给你发消息|发来消息/;
+
+function inboxLines(e) {
+  const t = (e.innerText || '').trim();
+  if (!t || t.length > 200) return null;
+  return t.split('\n').map((x) => x.trim()).filter((x) => x);
+}
+
+// 把私信会话列表读出来，一条是一个 {who, text}。
+//
+// 先按类名找，命中的话最准。类名认不出来就按长相找：手机版和电脑版
+// 是两套完全不同的页面，类名对不上，写死类名的话页面上明明列着几十条，
+// 这边一条都读不出来。
+//
+// 一条会话长这样：昵称一行、最后一句一行、时间一行。按这个形状找，
+// 两版都认得出。
+function readInboxRows() {
+  let items = [...document.querySelectorAll(
+    '[class*="conversationConversationItem"],[class*="ConversationItem"],' +
+    '[class*="sessionItem"],[class*="chatListItem"]')];
+
+  if (items.length < 2) {
+    const boxes = [];
+    for (const e of document.querySelectorAll('div,li,a,section')) {
+      const ls = inboxLines(e);
+      if (!ls) continue;
+      if (ls.length < 2 || ls.length > 5) continue;
+      if (!ls.some((x) => CLOCK.test(x))) continue;
+      // 父块和子块常常长得一模一样，谁都不排除，最后靠去重收尾。
+      //
+      // 原来是发现里面还有同样长相的子块就跳过这一层，结果每条会话
+      // 外面都套着一层同样长相的壳，一层层全被跳掉，一条都不剩。
+      boxes.push(e);
+    }
+    if (boxes.length) items = boxes;
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const it of items) {
+    const lines = inboxLines(it);
+    if (!lines || lines.length < 2) continue;
+    // 第一行是昵称，中间是最后一句，末尾常是时间和未读数
+    const who = lines[0].slice(0, 30);
+    const last = lines.slice(1)
+      .filter((x) => !/^\d+$/.test(x))
+      .filter((x) => !CLOCK.test(x))
+      .join(' ')
+      .slice(0, 80);
+    if (!last) continue;
+    // 父子块读出来是同一条，留一份就够
+    const mark = who + '' + last;
+    if (seen.has(mark)) continue;
+    seen.add(mark);
+    out.push({ who: who, text: last });
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+
+// 一块看着像不像一条通知：两到六行，其中一行带时间。
+//
+// 光靠类名对上不够。实测选出来的常常是通知里的一小片，整块只有一行时间，
+// 拿它当一条通知，昵称那一格里读出来的就是昨天、一天前这种。
+function looksLikeNotice(e) {
+  const ls = inboxLines(e);
+  if (!ls) return false;
+  if (ls.length < 2 || ls.length > 6) return false;
+  return ls.some((x) => STAMP.test(x));
+}
+
+// 从一条通知的几行字里挑出昵称。
+//
+// 各家排法不一样，有的把时间放在最前面。照搬头一行的话，界面上一屏
+// 人名全是昨天、一天前，一个真名都没有。
+function noticeWho(lines) {
+  for (const x of lines) {
+    if (STAMP.test(x)) continue;
+    if (NOTICE_KEY.test(x)) continue;
+    if (/^(回复|删除|查看|关注|回关)$/.test(x)) continue;
+    if (/^[0-9]+$/.test(x)) continue;
+    if (x.length > 30) continue;
+    return x;
+  }
+  return '';
+}
+
+// 这条通知底下的两个地址：他的主页和那篇帖子。
+//
+// 一条通知里常有好几个链接：头像和昵称指向主页，右边的缩略图指向帖子。
+// 只取第一个的话，两样里总有一样拿不到，主页拿不到就点不开他，
+// 帖子拿不到就回不去当时那条评论。两样不在同一层，往上走两层去够，
+// 走太远会串到隔壁那条。
+function noticeLinks(it) {
+  let link = '';
+  let home = '';
+  let scope = it;
+  for (let up = 0; up < 3 && scope; up++) {
+    for (const a of scope.querySelectorAll('a[href]')) {
+      const h = a.getAttribute('href') || '';
+      if (!link && (h.indexOf('/explore/') >= 0 || h.indexOf('/discovery/') >= 0 ||
+        h.indexOf('/video/') >= 0 || h.indexOf('/note/') >= 0)) {
+        link = h.slice(0, 200);
+      }
+      if (!home && (h.indexOf('/user/profile/') >= 0 || h.indexOf('/user/') >= 0)) {
+        home = h.slice(0, 200);
+      }
+      if (link && home) break;
+    }
+    if (link && home) break;
+    scope = scope.parentElement;
+  }
+  const m = home.match(/\/user(?:\/profile)?\/([A-Za-z0-9_-]+)/);
+  return { link: link, user_id: m ? m[1] : '' };
+}
+
+// 把通知页读出来，一条是一个 {kind, who, text, mine, link, user_id, about}。
+//
+// assumeKind 是判不出类型时按哪一类算。有的版本点赞那一条只有一个爱心
+// 图标，文字上看不出是赞还是回复，但我们是在赞那一栏里读的，
+// 那一栏里的条目本来就都是赞。
+function readNoticeRows(assumeKind) {
+  let items = [...document.querySelectorAll(
+    '[class*="notice"],[class*="Notice"],[class*="message-item"],' +
+    '[class*="messageItem"],[class*="interaction"],li')].filter(looksLikeNotice);
+
+  // 类名这条路走不通就按长相找。两家改版都换类名，写死类名的话，
+  // 页面上明明看得见谁点了赞，这边一条都读不出来。
+  if (items.length < 2) {
+    const boxes = [];
+    for (const e of document.querySelectorAll('div,li,section,article')) {
+      // 先用 textContent 粗筛。取 innerText 会逼浏览器重新排版，
+      // 页面上几千个元素挨个来一遍要好几秒。
+      const raw = (e.textContent || '').trim();
+      if (raw.length < 6 || raw.length > 200) continue;
+      if (!looksLikeNotice(e)) continue;
+      boxes.push(e);
+      if (boxes.length >= 120) break;
+    }
+    if (boxes.length) items = boxes;
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const it of items) {
+    const lines = inboxLines(it);
+    if (!lines || !lines.length) continue;
+    const t = lines.join('\n');
+
+    let kind = '';
+    // 收藏跟赞算一类：都是对帖子有反应但没开口
+    if (/赞了你|点赞了你|赞了我|收藏了你|收藏了/.test(t)) kind = '点赞';
+    else if (/回复了|回复你|评论了你|@了你/.test(t)) kind = '回复';
+    else if (/给你发消息|发来消息/.test(t)) kind = '私信';
+    else kind = asText(assumeKind);
+    if (!kind) continue;
+
+    const who = noticeWho(lines);
+    if (!who) continue;
+
+    // 昵称那一行去掉，时间和操作词也去掉，剩下的才是内容。
+    // 昵称不一定在第一行，所以按内容剔，不能按位置切。
+    const rest = lines
+      .filter((x) => x !== who)
+      .filter((x) => !NOTICE_KEY.test(x))
+      .filter((x) => !CLOCK.test(x))
+      .filter((x) => !/^(回复|删除|查看|关注|回关)$/.test(x));
+
+    // 剩下的行里，最后一行往往是被他针对的那一条，也就是我自己发的。
+    // 点赞那种本来就没有他说的话，剩下的唯一一行就是我那条评论；
+    // 回复那种前面是他说的话，末尾才是引用的我那条。
+    let body = '';
+    let mine = '';
+    if (!rest.length) {
+      body = '';
+    } else if (kind === '点赞') {
+      mine = rest.join(' ').slice(0, 80);
+    } else if (rest.length === 1) {
+      body = rest[0].slice(0, 80);
+    } else {
+      body = rest.slice(0, rest.length - 1).join(' ').slice(0, 80);
+      mine = rest[rest.length - 1].slice(0, 80);
+    }
+
+    // 他干了什么，照页面上那句原话记下来。各家写法不一样：赞了你的笔记、
+    // 评论了你的笔记、赞了你的评论都有。自己按类型编一句的话，赞的明明是
+    // 笔记，界面上却写着赞了你的评论，人照着去找那条评论根本找不着。
+    let about = '';
+    for (const x of lines) {
+      if (!NOTICE_KEY.test(x)) continue;
+      const at = x.search(STAMP);
+      about = (at > 0 ? x.slice(0, at) : x).trim().slice(0, 20);
+      break;
+    }
+
+    const mark = kind + who + body + mine;
+    if (seen.has(mark)) continue;
+    seen.add(mark);
+    const at = noticeLinks(it);
+    out.push({
+      kind: kind,
+      who: who,
+      text: body,
+      mine: mine,
+      link: at.link,
+      user_id: at.user_id,
+      about: about,
+    });
+    if (out.length >= 80) break;
+  }
+  return out;
+}
+
+// 在通知页上点某一栏。
+//
+// 通知分栏：赞和评论各在一栏，默认停在评论那栏，不点一下就永远看不到
+// 谁给我点了赞。而点赞的人恰恰是最该私信的。
+//
+// 已经在这一栏就什么都不做，有的版本点第二下会退回上一栏。
+function pickNoticeTab(name) {
+  const want = asText(name);
+  if (!want) return 'none';
+  const hit = [...document.querySelectorAll(
+    'div,span,button,li,a,[role=tab],[role=button]')]
+    .filter((e) => (e.textContent || '').trim() === want)
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      // 标签本身不大，套着它的大块和看不见的都排掉
+      return r.width > 20 && r.width < 260 && r.height > 12 && r.height < 90 &&
+        r.top >= 0 && r.top < window.innerHeight;
+    })[0];
+  if (!hit) return 'none';
+  const on = (hit.className || '') + ' ' +
+    ((hit.parentElement && hit.parentElement.className) || '');
+  if (/active|selected|checked|cur/i.test(on)) return 'already';
+  hit.click();
+  return 'ok';
+}
+
+// 列表往下翻一屏。会话和通知都是懒加载的，不翻只读得到最上面那几条。
+//
+// 页面本身常常不滚，真正在滚的是列表里面那个能滚的块，两个都推一把。
+function scrollInbox() {
+  let best = null;
+  for (const e of document.querySelectorAll('div,section,ul,main')) {
+    if (e.scrollHeight - e.clientHeight < 200) continue;
+    if (e.clientHeight < 200) continue;
+    if (!best || e.clientHeight > best.clientHeight) best = e;
+  }
+  if (best) best.scrollTop = best.scrollTop + best.clientHeight;
+  window.scrollBy(0, Math.floor(window.innerHeight * 0.8));
+  return best ? 'box' : 'window';
+}
+
+// 这句话是对方回的，不是我们发的那句。
+//
+// 会话列表上的最后一句常被截断，末尾还带个省略号，所以一头包含另一头
+// 也算同一句，不然每条都会被当成回复。
+function looksLikeReply(last, mine) {
+  const bare = (s) => asText(s).replace(/\s+/g, '').replace(/[….]+$/, '');
+  const a = bare(last);
+  const b = bare(mine);
+  if (!a) return false;
+  if (!b) return true;
+  if (a === b) return false;
+  return a.indexOf(b) < 0 && b.indexOf(a) < 0;
+}
+
+
 // ===== 60-hook.js =====
 // 钩住页面自己发的接口请求。
 //
@@ -4619,6 +5010,288 @@ async function nextTarget(got) {
 }
 
 
+// ===== 76-sync.js =====
+// 把平台上的消息同步过来。
+//
+// 谁私信了我、谁回复了我、谁给我的评论点了赞，这三样都在平台自己的
+// 消息中心和通知页里。这一趟挨个页面读一遍，存进本地。
+//
+// 跟采集和发送一样是一台状态机：换一次页面脚本就被重新加载一次，
+// 进度只能存在库里，新页面起来读回去接着跑。
+//
+// 这批人是最该接着聊的：他们对我发的东西有反应，比评论区里的路人近得多。
+
+const SYNC_KEY = 'sync';
+
+// 一趟按顺序走这几站。
+//
+// tab 是通知页上要点的那一栏，赞和评论各在一栏，不点一下就看不到
+// 谁点了赞，而点赞的人恰恰是最该私信的。
+// assume 是这一栏里判不出类型时按哪一类算。
+const SYNC_STOPS = [
+  { at: 'chat', kind: '私信', tab: '', assume: '', rounds: 5 },
+  { at: 'notice', kind: '回复', tab: '评论和@', assume: '回复', rounds: 3 },
+  { at: 'notice', kind: '点赞', tab: '赞和收藏', assume: '点赞', rounds: 3 },
+];
+
+const Sync = {
+  job: null,
+  stopFlag: false,
+  busy: false,
+  onChange: null,
+};
+
+function emitSync() {
+  if (Sync.onChange) {
+    try { Sync.onChange(Sync.job); } catch (e) {}
+  }
+}
+
+async function getSyncJob() {
+  return await getOne('job', SYNC_KEY);
+}
+
+async function saveSyncJob(patch) {
+  const job = Object.assign({}, Sync.job || {}, patch || {});
+  job.id = SYNC_KEY;
+  job.tab_id = TAB_ID;
+  job.beat = Date.now();
+  Sync.job = job;
+  await putOne('job', job);
+  emitSync();
+  return job;
+}
+
+async function saySync(line) {
+  const job = Sync.job || {};
+  await saveSyncJob({ message: line, log: logLine(job, line) });
+}
+
+// ---------- 该待在哪个页面 ----------
+
+function syncStop(job) {
+  return SYNC_STOPS[asInt(job.step)] || null;
+}
+
+// 小红书网页版的私信页是 /chat，不是 /im 也不是 /messages，
+// 那两个都直接跳 404。抖音的是 /chat。
+//
+// 抖音没有单独的通知页，赞和评论在首页右上角那个铃铛里，那个面板只认
+// 真的鼠标悬停，用户脚本派不出来，所以抖音只同步私信。
+function syncWantUrl(stop) {
+  if (onDouyin()) {
+    return stop.at === 'chat' ? 'https://www.douyin.com/chat' : '';
+  }
+  return stop.at === 'chat'
+    ? 'https://www.xiaohongshu.com/chat'
+    : 'https://www.xiaohongshu.com/notification';
+}
+
+function onSyncPage(stop) {
+  const path = location.pathname;
+  if (stop.at === 'chat') {
+    return path.indexOf('/chat') === 0 || path.indexOf('/im') === 0 ||
+      path.indexOf('/message') === 0;
+  }
+  return path.indexOf('/notification') === 0;
+}
+
+// ---------- 读一站 ----------
+
+// 列表是懒加载的，读几轮，中间往下翻。
+async function readOneStop(job, stop) {
+  if (stop.tab) {
+    const r = pickNoticeTab(stop.tab);
+    // 这一栏点不着就跳过，各版本的叫法不一样
+    if (r === 'none') {
+      await saySync('页面上没有「' + stop.tab + '」这一栏，跳过');
+      return 0;
+    }
+    // 这一栏刚点开，等它把列表铺出来再读
+    await syncNap(2000);
+  }
+  let got = 0;
+  const mine = await sentByName();
+  for (let i = 0; i < stop.rounds; i++) {
+    if (syncStopped()) break;
+    const rows = stop.at === 'chat'
+      ? readInboxRows()
+      : readNoticeRows(stop.assume);
+    got += await keepRows(rows, stop, mine);
+    await saySync('读' + stop.kind + '，收到 ' + (asInt(job.got) + got) + ' 条');
+    scrollInbox();
+    await syncNap(1500);
+  }
+  return got;
+}
+
+// 发过的那些人，按昵称索引。读之前查一次就够。
+//
+// 一条一条重查的话，读五轮就是五次全表，中间界面全卡着。
+async function sentByName() {
+  const rows = await sentList(500, '');
+  const by = new Map();
+  for (const r of rows) {
+    if (r.nickname && !by.has(r.nickname)) by.set(r.nickname, r);
+  }
+  return by;
+}
+
+// 读到的这一批存下来。
+//
+// 会话列表里这些人有的是我们发过的，有的是他自己找上门的。不管哪种都收，
+// 名单要全。发过的那些顺带对一遍，最后一句换了就是他回了。
+async function keepRows(rows, stop, mine) {
+  if (!rows || !rows.length) return 0;
+  const site = siteNow();
+  const trade = Trade.now.key;
+  const out = [];
+  for (const r of rows) {
+    if (stop.at === 'chat') {
+      const one = mine.get(r.who);
+      if (one && looksLikeReply(r.text, one.text)) {
+        await markReplied(r.who, r.text);
+      }
+    }
+    out.push(Object.assign({}, r, {
+      kind: r.kind || stop.kind,
+      site: site,
+      trade: trade,
+    }));
+  }
+  return await addInboxAll(out);
+}
+
+// ---------- 等待 ----------
+
+function syncStopped() {
+  return Sync.stopFlag || !Sync.job || !Sync.job.running;
+}
+
+async function syncNap(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (syncStopped()) return;
+    await sleep(Math.min(300, end - Date.now()));
+  }
+}
+
+// 页面真的有东西了没有。
+//
+// 消息列表本来就只有昵称和几个字，一屏加起来常常不到四十，
+// 卡在四十字上会白等到超时。
+async function waitPage() {
+  for (let i = 0; i < 40; i++) {
+    if (syncStopped()) return false;
+    const t = document.body ? (document.body.innerText || '') : '';
+    if (t.trim().length > 5) return true;
+    await syncNap(500);
+  }
+  return false;
+}
+
+// ---------- 对外 ----------
+
+async function startSync() {
+  if (Runtime.job && Runtime.job.running) {
+    return { ok: false, why: '采集还在跑，先停下来再同步' };
+  }
+  if (Sender.job && Sender.job.running) {
+    return { ok: false, why: '正在发东西，先停下来再同步' };
+  }
+  Sync.stopFlag = false;
+  await saveSyncJob({
+    running: true,
+    step: 0,
+    got: 0,
+    log: [],
+    message: '正在打开消息页',
+    startedAt: Date.now(),
+  });
+  await driveSync();
+  return { ok: true };
+}
+
+async function stopSync() {
+  Sync.stopFlag = true;
+  await finishSync('已停止');
+}
+
+async function finishSync(status) {
+  const job = Sync.job || {};
+  const n = asInt(job.got);
+  await saveSyncJob({
+    running: false,
+    message: status === '已停止'
+      ? '停了，收到 ' + n + ' 条'
+      : (n > 0 ? '收到 ' + n + ' 条' : '没有新消息'),
+  });
+  Sync.stopFlag = false;
+}
+
+async function nextStop(job, got) {
+  const step = asInt(job.step) + 1;
+  const total = asInt(job.got) + got;
+  if (step >= SYNC_STOPS.length) {
+    await saveSyncJob({ got: total });
+    await finishSync('完成');
+    return;
+  }
+  await saveSyncJob({ step: step, got: total });
+}
+
+async function driveSync() {
+  if (Sync.busy) return;
+  const job = Sync.job;
+  if (!job || !job.running) return;
+  // 另一个标签页正在跑，本页只看不动
+  if (job.tab_id && job.tab_id !== TAB_ID &&
+    Date.now() - (job.beat || 0) < TAKEOVER_MS) {
+    return;
+  }
+
+  Sync.busy = true;
+  try {
+    const stop = syncStop(job);
+    if (!stop) {
+      await finishSync('完成');
+      return;
+    }
+    const url = syncWantUrl(stop);
+    if (!url) {
+      // 抖音没有通知页，剩下的站直接跳过
+      await nextStop(job, 0);
+      return;
+    }
+    if (!onSyncPage(stop)) {
+      await saySync('正在打开' + (stop.at === 'chat' ? '私信页' : '通知页'));
+      location.href = url;
+      return;
+    }
+    if (!await waitPage()) {
+      await saySync('页面没打开，看看是不是没登录');
+      await finishSync('已停止');
+      return;
+    }
+    const got = await readOneStop(job, stop);
+    if (syncStopped()) {
+      await finishSync('已停止');
+      return;
+    }
+    await nextStop(Sync.job, got);
+    // 下一站多半在另一个页面。这里只管把车开过去，到了之后新的一轮
+    // 加载会自己接上。放进定时器是为了等上面这一轮先把 busy 放掉，
+    // 直接递归的话新的一轮进来看到 busy 还在，扭头就走，整趟停在这儿。
+    setTimeout(() => { driveSync(); }, 300);
+  } catch (e) {
+    await saySync('出错了 ' + (e && e.message ? e.message : e));
+    await finishSync('已停止');
+  } finally {
+    Sync.busy = false;
+  }
+}
+
+
 // ===== 80-ui.js =====
 // 悬浮面板。整套界面都在这一个盒子里，不动平台自己的页面。
 //
@@ -4805,7 +5478,8 @@ const UI = {
   search: '',
   page: 0,
   pageSize: 40,
-  sentOnlyOk: false,
+  // 消息页看哪一档：我发的，还是别人找过来的那三类
+  inboxView: 'sent',
   // 帖子页正在看哪一篇。空的时候看的是列表。
   note: null,
   // 正文摊开了没有。有的帖子正文很长，全摊开要占三四屏，
@@ -4917,7 +5591,7 @@ function mountPanel() {
   });
 
   const tabs = panel.querySelector('.xhsc-tabs');
-  for (const name of ['采集', '帖子', '人', '私信', '设置']) {
+  for (const name of ['采集', '帖子', '人', '消息', '设置']) {
     const t = el('div', 'xhsc-tab' + (name === UI.tab ? ' on' : ''), name);
     t.addEventListener('click', () => {
       UI.tab = name;
@@ -4965,7 +5639,7 @@ function renderBody() {
   if (UI.tab === '采集') renderCollect(b);
   else if (UI.tab === '帖子') renderNotes(b);
   else if (UI.tab === '人') renderPeople(b);
-  else if (UI.tab === '私信') renderSent(b);
+  else if (UI.tab === '消息') renderSent(b);
   else renderSettings(b);
 }
 
@@ -5797,31 +6471,49 @@ function renderSending(b, job) {
 //
 // 这三样必须摆在一起看。只看我们发了什么，判断不了话说得对不对；
 // 只看对方原话，又不知道我们回的是不是这个人的情况。
+// 消息页分四档：我发出去的，和别人找过来的那三类。
+//
+// 别人找过来的那三类是最该接着聊的：他们对我发的东西有反应，
+// 比评论区里的路人近得多。
+const INBOX_VIEWS = [
+  ['sent', '我发的'],
+  ['私信', '私信我的'],
+  ['回复', '回复我的'],
+  ['点赞', '赞我的'],
+];
+
 async function renderSent(b) {
+  // 正在取新消息的时候这一页就是进度
+  if (Sync.job && Sync.job.running) {
+    renderSyncing(b, Sync.job);
+    return;
+  }
+
   b.appendChild(el('div', 'xhsc-empty', '读取中'));
   const rows = await sentList(500, Trade.now.key);
+  const box = await inboxCounts(Trade.now.key);
   b.innerHTML = '';
 
-  const ok = rows.filter((r) => r.status === '成功').length;
   const nums = el('div', 'xhsc-nums');
-  const mk = (value, label, n, clickable) => {
-    const one = el('div', 'xhsc-num' + (clickable && UI.sentOnlyOk === value ? ' on' : ''),
-      '<b>' + n + '</b><span>' + label + '</span>');
-    if (clickable) {
-      one.addEventListener('click', () => {
-        UI.sentOnlyOk = value;
-        renderBody();
-      });
-    }
-    return one;
-  };
-  nums.appendChild(mk(false, '全部', rows.length, true));
-  nums.appendChild(mk(true, '成功', ok, true));
-  // 失败那一格只报数，点不了。失败的记录混在全部里看更省事。
-  nums.appendChild(mk(null, '失败', rows.length - ok, false));
+  const nOf = (k) => (k === 'sent' ? rows.length : asInt(box[k]));
+  for (const [key, label] of INBOX_VIEWS) {
+    const one = el('div', 'xhsc-num' + (UI.inboxView === key ? ' on' : ''),
+      '<b>' + nOf(key) + '</b><span>' + label + '</span>');
+    one.addEventListener('click', () => {
+      UI.inboxView = key;
+      renderBody();
+    });
+    nums.appendChild(one);
+  }
   b.appendChild(nums);
 
-  const list = UI.sentOnlyOk ? rows.filter((r) => r.status === '成功') : rows;
+  syncFoot();
+  if (UI.inboxView !== 'sent') {
+    await renderInbox(b, UI.inboxView);
+    return;
+  }
+
+  const list = rows;
   if (!list.length) {
     b.appendChild(el('div', 'xhsc-empty', '还没发过私信'));
     return;
@@ -5845,6 +6537,81 @@ async function renderSent(b) {
     c.appendChild(foot2);
     b.appendChild(c);
   }
+}
+
+// 别人找过来的那一档。
+async function renderInbox(b, kind) {
+  const list = await inboxList({ kind: kind, trade: Trade.now.key, limit: 300 });
+  if (!list.length) {
+    b.appendChild(el('div', 'xhsc-empty', '还没有，点下面取一次新消息'));
+    return;
+  }
+  for (const r of list) {
+    const c = el('div', 'xhsc-card');
+    const who = el('div', 'xhsc-who');
+    who.appendChild(avatar(r.who));
+    who.appendChild(el('div', 'xhsc-name', esc(r.who || '匿名')));
+    // 他干了什么照页面上那句原话写。自己按类型编一句的话，赞的明明是笔记，
+    // 这儿却写着赞了你的评论，人照着去找那条评论根本找不着。
+    if (r.about) who.appendChild(el('span', 'xhsc-tag', esc(r.about)));
+    who.appendChild(el('span', 'xhsc-time', esc(asText(r.got_at).slice(0, 16))));
+    c.appendChild(who);
+    if (r.text) c.appendChild(el('p', '', esc(head(r.text, 150))));
+    // 他冲着我哪一条来的
+    if (r.mine) c.appendChild(el('p', 'xhsc-talk', esc(head(r.mine, 120))));
+
+    const mini = el('div', 'xhsc-mini');
+    if (r.user_id && canOpenProfile(r.user_id)) {
+      const dm = el('button', '', '私信');
+      dm.addEventListener('click', () => launchSend([{
+        user_id: r.user_id,
+        nickname: r.who,
+        said: r.text || r.mine,
+        kind: '评论者',
+        site: asSite(r.site),
+        trade: asTrade(r.trade),
+      }], '私信'));
+      mini.appendChild(dm);
+    }
+    if (r.link) {
+      const go = el('button', '', '看那条');
+      go.addEventListener('click', () => {
+        window.open(r.link.indexOf('http') === 0
+          ? r.link
+          : location.origin + r.link, '_blank');
+      });
+      mini.appendChild(go);
+    }
+    if (mini.children.length) c.appendChild(mini);
+    b.appendChild(c);
+  }
+}
+
+// 底下那个取新消息的按钮。
+function syncFoot() {
+  const f = foot(true);
+  const go = el('button', 'xhsc-btn', '取新消息');
+  go.addEventListener('click', async () => {
+    const r = await startSync();
+    if (!r.ok) say(r.why);
+  });
+  f.appendChild(go);
+}
+
+// 正在取的时候这一页显示到哪一步了。
+function renderSyncing(b, job) {
+  b.appendChild(el('div', 'xhsc-empty', esc(asText(job.message) || '正在取')));
+  const log = listOf(job.log).slice(-20);
+  if (log.length) {
+    b.appendChild(el('div', 'xhsc-log', esc(log.join(String.fromCharCode(10)))));
+  }
+  const f = foot(true);
+  const stop = el('button', 'xhsc-btn ghost', '停下');
+  stop.addEventListener('click', async () => {
+    await stopSync();
+    renderBody();
+  });
+  f.appendChild(stop);
 }
 
 // ---------- 设置页 ----------
@@ -6074,6 +6841,7 @@ function allowedConsole(origin) {
 async function bridgeStatus() {
   const job = Runtime.job || {};
   const send = Sender.job || {};
+  const sync = Sync.job || {};
   const c = await counts();
   return {
     site: siteNow(),
@@ -6109,6 +6877,12 @@ async function bridgeStatus() {
       message: asText(send.message),
       stats: send.stats || {},
       log: (send.log || []).slice(-30),
+    },
+    sync: {
+      running: !!sync.running,
+      got: asInt(sync.got),
+      message: asText(sync.message),
+      log: (sync.log || []).slice(-30),
     },
   };
 }
@@ -6160,6 +6934,23 @@ async function bridgeHandle(msg) {
 
     case 'sent':
       return { rows: await sentList(300, Trade.now.key) };
+
+    case 'inbox':
+      return {
+        rows: await inboxList({
+          kind: asText(msg.kind),
+          trade: Trade.now.key,
+          limit: 300,
+        }),
+        counts: await inboxCounts(Trade.now.key),
+      };
+
+    case 'startSync':
+      return await startSync();
+
+    case 'stopSync':
+      await stopSync();
+      return { ok: true };
 
     case 'startCollect':
       await startCollect({
@@ -6307,6 +7098,7 @@ async function boot() {
     await Limits.loadBatch();
     Runtime.job = (await getJob()) || null;
     Sender.job = (await getSendJob()) || null;
+    Sync.job = (await getSyncJob()) || null;
   } catch (e) {
     // 库开不了。无痕模式、空白页、以及浏览器设了禁止网站存数据时都是这样。
     // 不在平台页面上就安静退出；在的话得把话说清楚，
@@ -6323,7 +7115,8 @@ async function boot() {
   mountPanel();
 
   const busyNow = () =>
-    !!(Runtime.job && Runtime.job.running) || !!(Sender.job && Sender.job.running);
+    !!(Runtime.job && Runtime.job.running) || !!(Sender.job && Sender.job.running) ||
+    !!(Sync.job && Sync.job.running);
 
   let wasBusy = null;
   const onAny = () => {
@@ -6340,12 +7133,15 @@ async function boot() {
   };
   Runtime.onChange = onAny;
   Sender.onChange = onAny;
+  Sync.onChange = onAny;
 
   wasBusy = busyNow();
   if (wasBusy) {
     UI.fab.textContent = '跑着呢';
     // 发送时默认停在人页，那一页就是发送进度
     if (Sender.job && Sender.job.running) UI.tab = '人';
+    // 同步是在消息页上跑的，停在私信那一页才看得见收了多少
+    if (Sync.job && Sync.job.running) UI.tab = '消息';
     togglePanel(true);
     for (const o of UI.panel.querySelectorAll('.xhsc-tab')) {
       o.classList.toggle('on', o.textContent === UI.tab);
@@ -6359,6 +7155,7 @@ async function boot() {
   // 两台状态机都靠跳页面推进，同时跑会互相把页面抢走，所以一次只让一台动。
   // 发送优先：它是一条一条留痕的，被打断的代价比采集大得多。
   if (Sender.job && Sender.job.running) await driveSend();
+  else if (Sync.job && Sync.job.running) await driveSync();
   else await drive();
 }
 
@@ -6400,6 +7197,14 @@ window.__xhs = {
   makeReply: makeReply,
   AI: AI,
   draftMany: draftMany,
+  Sync: Sync,
+  startSync: startSync,
+  stopSync: stopSync,
+  driveSync: driveSync,
+  inboxList: inboxList,
+  addInboxAll: addInboxAll,
+  readInboxRows: readInboxRows,
+  readNoticeRows: readNoticeRows,
   renderBody: renderBody,
   siteNow: siteNow,
   UI: UI,

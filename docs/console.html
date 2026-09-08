@@ -104,7 +104,7 @@
     <button data-tab="collect" class="on">采集</button>
     <button data-tab="notes">帖子</button>
     <button data-tab="people">人</button>
-    <button data-tab="sent">私信</button>
+    <button data-tab="sent">消息</button>
     <button data-tab="setting">设置</button>
   </div>
 
@@ -612,16 +612,61 @@
 
   // ---------- 私信记录 ----------
 
+  // 消息页分四档：我发出去的，和别人找过来的那三类。
+  //
+  // 别人找过来的那三类是最该接着聊的：他们对我发的东西有反应，
+  // 比评论区里的路人近得多。
+  const INBOX_VIEWS = [
+    ['sent', '我发的'],
+    ['私信', '私信我的'],
+    ['回复', '回复我的'],
+    ['点赞', '赞我的'],
+  ];
+  let inboxView = 'sent';
+
   async function renderSent() {
     const p = $('pane-sent');
     p.innerHTML = '<div class="empty">读取中</div>';
-    const got = await ask('sent', {}, 8000);
+    const got = await ask(inboxView === 'sent' ? 'sent' : 'inbox',
+      { kind: inboxView }, 8000);
+    const box = inboxView === 'sent' ? await ask('inbox', { kind: '' }, 8000) : got;
     p.innerHTML = '';
     if (!got) {
       p.innerHTML = '<div class="empty">那一页没应答</div>';
       return;
     }
+    const counts = (box && box.counts) || {};
     const rows = got.rows || [];
+
+    const bar = el('div', 'tabs');
+    for (const pair of INBOX_VIEWS) {
+      const b = el('button', pair[0] === inboxView ? 'on' : '',
+        X.esc(pair[1]) + ' ' +
+        (pair[0] === 'sent'
+          ? (inboxView === 'sent' ? rows.length : '')
+          : X.asInt(counts[pair[0]])));
+      b.addEventListener('click', function () {
+        inboxView = pair[0];
+        renderSent();
+      });
+      bar.appendChild(b);
+    }
+    p.appendChild(bar);
+
+    const go = el('button', 'ghost', status.sync && status.sync.running
+      ? '正在取：' + X.esc(status.sync.message)
+      : '取新消息');
+    go.addEventListener('click', async function () {
+      const r = await ask('startSync', {}, 8000);
+      if (r && r.ok === false) alert(r.why);
+      else renderSent();
+    });
+    p.appendChild(go);
+
+    if (inboxView !== 'sent') {
+      renderInbox(p, rows);
+      return;
+    }
     const ok = rows.filter(function (r) { return r.status === '成功'; }).length;
     p.appendChild(el('div', 'who', pill('全部 ' + rows.length) +
       pill('成功 ' + ok, 'high') + pill('失败 ' + (rows.length - ok))));
@@ -637,6 +682,33 @@
       card.appendChild(el('p', 'talk', X.esc(s.text)));
       card.appendChild(el('p', 'said', X.esc(X.asText(s.at).slice(0, 16) +
         (s.status === '成功' ? '' : '　' + X.head(X.asText(s.detail).split('|')[0], 40)))));
+      p.appendChild(card);
+    }
+  }
+
+  // 别人找过来的那一档。
+  function renderInbox(p, rows) {
+    if (!rows.length) {
+      p.appendChild(el('div', 'empty', '还没有，点上面取一次新消息'));
+      return;
+    }
+    for (const r of rows) {
+      const card = el('div', 'card');
+      // 他干了什么照页面上那句原话写。自己按类型编一句的话，赞的明明是笔记，
+      // 这儿却写着赞了你的评论，人照着去找那条评论根本找不着。
+      card.appendChild(el('div', 'who', '<b>' + X.esc(r.who || '匿名') + '</b>' +
+        (r.about ? pill(r.about) : '') +
+        pill(X.asText(r.got_at).slice(0, 16))));
+      if (r.text) card.appendChild(el('p', 'said', X.esc(X.head(r.text, 150))));
+      if (r.mine) card.appendChild(el('p', 'talk', X.esc(X.head(r.mine, 120))));
+      if (r.link) {
+        const a = el('a', '', '看那条');
+        a.href = r.link.indexOf('http') === 0
+          ? r.link
+          : 'https://www.xiaohongshu.com' + r.link;
+        a.target = '_blank';
+        card.appendChild(a);
+      }
       p.appendChild(card);
     }
   }

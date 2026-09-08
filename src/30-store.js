@@ -7,7 +7,7 @@
 // 省下一大堆游标代码，出错的地方也少。
 
 const DB_NAME = 'xhs_leads';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 // 一行数据存在哪张表，以及主键是哪一列。
 const STORES = {
@@ -17,8 +17,13 @@ const STORES = {
   settings: 'k',
   tasks: 'id',
   touches: 'id',
+  // 别人主动找过来的：私信我的、回复我的、给我点赞的
+  inbox: 'id',
   job: 'id',
 };
+
+// 库自己发号的那几张表。这些表没有天然主键。
+const AUTO_KEY = ['tasks', 'touches', 'inbox'];
 
 let _db = null;
 
@@ -32,7 +37,7 @@ function openDb() {
       for (const [name, key] of Object.entries(STORES)) {
         if (d.objectStoreNames.contains(name)) continue;
         // 任务和触达没有天然主键，让库自己发号
-        if (name === 'tasks' || name === 'touches') {
+        if (AUTO_KEY.indexOf(name) >= 0) {
           d.createObjectStore(name, { keyPath: key, autoIncrement: true });
         } else {
           d.createObjectStore(name, { keyPath: key });
@@ -360,7 +365,8 @@ async function clearJob() {
 // 整库导出成一份 JSON。拿去电脑上看，或者换台设备接着用。
 async function exportAll() {
   const out = { version: 1, exported_at: nowCst(), tables: {} };
-  for (const name of ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches']) {
+  for (const name of
+    ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches', 'inbox']) {
     out.tables[name] = await getAll(name);
   }
   return out;
@@ -370,18 +376,20 @@ async function exportAll() {
 async function importAll(data) {
   const tables = mapOf(mapOf(data).tables);
   let n = 0;
-  for (const name of ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches']) {
+  for (const name of
+    ['notes', 'comments', 'keywords', 'settings', 'tasks', 'touches', 'inbox']) {
     const rows = listOf(tables[name]);
     if (!rows.length) continue;
     // 自增主键的表，导进来的 id 可能跟本地撞车，去掉让库重新发号
-    const clean = (name === 'tasks' || name === 'touches')
+    const auto = AUTO_KEY.indexOf(name) >= 0;
+    const clean = auto
       ? rows.map((r) => {
         const c = Object.assign({}, r);
         delete c.id;
         return c;
       })
       : rows;
-    if (name === 'tasks' || name === 'touches') {
+    if (auto) {
       const d = await openDb();
       await new Promise((resolve, reject) => {
         const t = d.transaction(name, 'readwrite');
@@ -513,4 +521,96 @@ async function sentList(limit, trade) {
     });
   }
   return out;
+}
+
+// ---------- 别人找过来的 ----------
+//
+// 谁私信了我、谁回复了我、谁给我点了赞，这三样都在平台自己的消息页里，
+// 同步那一趟读回来存在这儿。
+//
+// 这批人是最该接着聊的：他们对我发的东西有反应，比评论区里的路人近得多。
+
+// 同一条读到几遍就只留一条。列表往下翻的时候上面那些会重复读到，
+// 人在同一个会话里说了新的一句才算新的一条。
+function inboxMark(r) {
+  return asText(r.kind) + '\u0001' + asText(r.who) + '\u0001' +
+    asText(r.text) + '\u0001' + asSite(r.site);
+}
+
+// 收一批。返回真正新增了几条。
+async function addInboxAll(rows) {
+  const list = (rows || []).filter((r) => asText(r.who));
+  if (!list.length) return 0;
+  const old = await getAll('inbox');
+  const seen = new Set(old.map(inboxMark));
+  const fresh = [];
+  for (const r of list) {
+    const row = {
+      who: asText(r.who),
+      kind: asText(r.kind),
+      text: asText(r.text),
+      // mine 是被他针对的那一条，也就是我自己发的
+      mine: asText(r.mine),
+      about: asText(r.about),
+      link: asText(r.link),
+      user_id: asText(r.user_id),
+      site: asSite(r.site),
+      trade: asTrade(r.trade),
+      got_at: nowCst(),
+    };
+    const mark = inboxMark(row);
+    if (seen.has(mark)) continue;
+    seen.add(mark);
+    fresh.push(row);
+  }
+  if (!fresh.length) return 0;
+  // 一批一个事务。一条一条写的话，读一屏就是几十次落盘，界面跟着卡。
+  const d = await openDb();
+  await new Promise((resolve, reject) => {
+    const t = d.transaction('inbox', 'readwrite');
+    const s = t.objectStore('inbox');
+    for (const r of fresh) s.add(r);
+    t.oncomplete = resolve;
+    t.onerror = () => reject(t.error);
+  });
+  return fresh.length;
+}
+
+// 新的排前面。kind 给了就只看那一类。
+async function inboxList(opt) {
+  const o = opt || {};
+  let all = await getAll('inbox');
+  all = all.sort((a, b) => asInt(b.id) - asInt(a.id));
+  if (o.kind) all = all.filter((r) => r.kind === o.kind);
+  if (o.site) all = all.filter((r) => asSite(r.site) === o.site);
+  if (o.trade) all = all.filter((r) => asTrade(r.trade) === o.trade);
+  return o.limit ? all.slice(0, o.limit) : all;
+}
+
+async function inboxCounts(trade) {
+  const all = await inboxList({ trade: trade });
+  const out = { 私信: 0, 回复: 0, 点赞: 0 };
+  for (const r of all) {
+    if (out[r.kind] !== undefined) out[r.kind] += 1;
+  }
+  return out;
+}
+
+async function clearInbox() {
+  await clearStore('inbox');
+}
+
+// 这个人回我了。发过的那条流水上记一笔，名单上就能看出谁搭理了。
+async function markReplied(nickname, said) {
+  const who = asText(nickname);
+  if (!who) return false;
+  const all = await getAll('touches');
+  const mine = all
+    .filter((t) => t.kind === '私信' && asText(t.nickname) === who)
+    .sort((a, b) => asInt(b.id) - asInt(a.id))[0];
+  if (!mine || mine.replied) return false;
+  mine.replied = 1;
+  mine.reply_text = asText(said);
+  await putOne('touches', mine);
+  return true;
 }

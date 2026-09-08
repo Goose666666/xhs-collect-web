@@ -183,7 +183,8 @@ const UI = {
   search: '',
   page: 0,
   pageSize: 40,
-  sentOnlyOk: false,
+  // 消息页看哪一档：我发的，还是别人找过来的那三类
+  inboxView: 'sent',
   // 帖子页正在看哪一篇。空的时候看的是列表。
   note: null,
   // 正文摊开了没有。有的帖子正文很长，全摊开要占三四屏，
@@ -295,7 +296,7 @@ function mountPanel() {
   });
 
   const tabs = panel.querySelector('.xhsc-tabs');
-  for (const name of ['采集', '帖子', '人', '私信', '设置']) {
+  for (const name of ['采集', '帖子', '人', '消息', '设置']) {
     const t = el('div', 'xhsc-tab' + (name === UI.tab ? ' on' : ''), name);
     t.addEventListener('click', () => {
       UI.tab = name;
@@ -343,7 +344,7 @@ function renderBody() {
   if (UI.tab === '采集') renderCollect(b);
   else if (UI.tab === '帖子') renderNotes(b);
   else if (UI.tab === '人') renderPeople(b);
-  else if (UI.tab === '私信') renderSent(b);
+  else if (UI.tab === '消息') renderSent(b);
   else renderSettings(b);
 }
 
@@ -1175,31 +1176,49 @@ function renderSending(b, job) {
 //
 // 这三样必须摆在一起看。只看我们发了什么，判断不了话说得对不对；
 // 只看对方原话，又不知道我们回的是不是这个人的情况。
+// 消息页分四档：我发出去的，和别人找过来的那三类。
+//
+// 别人找过来的那三类是最该接着聊的：他们对我发的东西有反应，
+// 比评论区里的路人近得多。
+const INBOX_VIEWS = [
+  ['sent', '我发的'],
+  ['私信', '私信我的'],
+  ['回复', '回复我的'],
+  ['点赞', '赞我的'],
+];
+
 async function renderSent(b) {
+  // 正在取新消息的时候这一页就是进度
+  if (Sync.job && Sync.job.running) {
+    renderSyncing(b, Sync.job);
+    return;
+  }
+
   b.appendChild(el('div', 'xhsc-empty', '读取中'));
   const rows = await sentList(500, Trade.now.key);
+  const box = await inboxCounts(Trade.now.key);
   b.innerHTML = '';
 
-  const ok = rows.filter((r) => r.status === '成功').length;
   const nums = el('div', 'xhsc-nums');
-  const mk = (value, label, n, clickable) => {
-    const one = el('div', 'xhsc-num' + (clickable && UI.sentOnlyOk === value ? ' on' : ''),
-      '<b>' + n + '</b><span>' + label + '</span>');
-    if (clickable) {
-      one.addEventListener('click', () => {
-        UI.sentOnlyOk = value;
-        renderBody();
-      });
-    }
-    return one;
-  };
-  nums.appendChild(mk(false, '全部', rows.length, true));
-  nums.appendChild(mk(true, '成功', ok, true));
-  // 失败那一格只报数，点不了。失败的记录混在全部里看更省事。
-  nums.appendChild(mk(null, '失败', rows.length - ok, false));
+  const nOf = (k) => (k === 'sent' ? rows.length : asInt(box[k]));
+  for (const [key, label] of INBOX_VIEWS) {
+    const one = el('div', 'xhsc-num' + (UI.inboxView === key ? ' on' : ''),
+      '<b>' + nOf(key) + '</b><span>' + label + '</span>');
+    one.addEventListener('click', () => {
+      UI.inboxView = key;
+      renderBody();
+    });
+    nums.appendChild(one);
+  }
   b.appendChild(nums);
 
-  const list = UI.sentOnlyOk ? rows.filter((r) => r.status === '成功') : rows;
+  syncFoot();
+  if (UI.inboxView !== 'sent') {
+    await renderInbox(b, UI.inboxView);
+    return;
+  }
+
+  const list = rows;
   if (!list.length) {
     b.appendChild(el('div', 'xhsc-empty', '还没发过私信'));
     return;
@@ -1223,6 +1242,81 @@ async function renderSent(b) {
     c.appendChild(foot2);
     b.appendChild(c);
   }
+}
+
+// 别人找过来的那一档。
+async function renderInbox(b, kind) {
+  const list = await inboxList({ kind: kind, trade: Trade.now.key, limit: 300 });
+  if (!list.length) {
+    b.appendChild(el('div', 'xhsc-empty', '还没有，点下面取一次新消息'));
+    return;
+  }
+  for (const r of list) {
+    const c = el('div', 'xhsc-card');
+    const who = el('div', 'xhsc-who');
+    who.appendChild(avatar(r.who));
+    who.appendChild(el('div', 'xhsc-name', esc(r.who || '匿名')));
+    // 他干了什么照页面上那句原话写。自己按类型编一句的话，赞的明明是笔记，
+    // 这儿却写着赞了你的评论，人照着去找那条评论根本找不着。
+    if (r.about) who.appendChild(el('span', 'xhsc-tag', esc(r.about)));
+    who.appendChild(el('span', 'xhsc-time', esc(asText(r.got_at).slice(0, 16))));
+    c.appendChild(who);
+    if (r.text) c.appendChild(el('p', '', esc(head(r.text, 150))));
+    // 他冲着我哪一条来的
+    if (r.mine) c.appendChild(el('p', 'xhsc-talk', esc(head(r.mine, 120))));
+
+    const mini = el('div', 'xhsc-mini');
+    if (r.user_id && canOpenProfile(r.user_id)) {
+      const dm = el('button', '', '私信');
+      dm.addEventListener('click', () => launchSend([{
+        user_id: r.user_id,
+        nickname: r.who,
+        said: r.text || r.mine,
+        kind: '评论者',
+        site: asSite(r.site),
+        trade: asTrade(r.trade),
+      }], '私信'));
+      mini.appendChild(dm);
+    }
+    if (r.link) {
+      const go = el('button', '', '看那条');
+      go.addEventListener('click', () => {
+        window.open(r.link.indexOf('http') === 0
+          ? r.link
+          : location.origin + r.link, '_blank');
+      });
+      mini.appendChild(go);
+    }
+    if (mini.children.length) c.appendChild(mini);
+    b.appendChild(c);
+  }
+}
+
+// 底下那个取新消息的按钮。
+function syncFoot() {
+  const f = foot(true);
+  const go = el('button', 'xhsc-btn', '取新消息');
+  go.addEventListener('click', async () => {
+    const r = await startSync();
+    if (!r.ok) say(r.why);
+  });
+  f.appendChild(go);
+}
+
+// 正在取的时候这一页显示到哪一步了。
+function renderSyncing(b, job) {
+  b.appendChild(el('div', 'xhsc-empty', esc(asText(job.message) || '正在取')));
+  const log = listOf(job.log).slice(-20);
+  if (log.length) {
+    b.appendChild(el('div', 'xhsc-log', esc(log.join(String.fromCharCode(10)))));
+  }
+  const f = foot(true);
+  const stop = el('button', 'xhsc-btn ghost', '停下');
+  stop.addEventListener('click', async () => {
+    await stopSync();
+    renderBody();
+  });
+  f.appendChild(stop);
 }
 
 // ---------- 设置页 ----------
