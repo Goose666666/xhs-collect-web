@@ -131,6 +131,8 @@ window.__xhs = {
   driveSync: driveSync,
   inboxList: inboxList,
   addInboxAll: addInboxAll,
+  clearData: clearData,
+  clearInbox: clearInbox,
   readInboxRows: readInboxRows,
   readNoticeRows: readNoticeRows,
   renderBody: renderBody,

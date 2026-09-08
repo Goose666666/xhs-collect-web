@@ -3335,7 +3335,13 @@ function download(name, text, mime) {
 //   赞了你的笔记昨天 18:48
 // 说明和时间粘在一起，按整行比时间的话一条都认不出来，
 // 所以只要行里带时间就算。
-const STAMP = /(刚刚|昨天|前天|今天|星期.|周.|[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}[-月/][0-9]{1,2}日?|[0-9]+ ?(分钟|小时|天|周|月|个月|年)前)/;
+const STAMP = /(刚刚|昨天|前天|今天|星期.|周.|[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}|[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}[-月/][0-9]{1,2}日?|[0-9]+ ?(分钟|小时|天|周|月|个月|年)前)/;
+
+// 这一行不是他说的话，是页面自己的标注。
+//
+// 抖音的会话行里混着在线状态和占位符，照收的话名单上一串「昨天在线」
+// 「暂不支持该消息类型」，看不出谁说了什么。
+const NOT_SAID = /^((刚刚|昨天|前天|[0-9]+ ?(分钟|小时|天))?内?在线|暂不支持该消息类型|\[.{0,8}\]|草稿|.{0,4}已撤回.{0,6})$/;
 
 // 这一行是不是只有时间，没有内容。
 //
@@ -3397,13 +3403,17 @@ function readInboxRows() {
     const last = lines.slice(1)
       .filter((x) => !/^\d+$/.test(x))
       .filter((x) => !onlyTime(x))
+      .filter((x) => !NOT_SAID.test(x))
       .join(' ')
       .slice(0, 80);
     if (!last) continue;
-    // 父子块读出来是同一条，留一份就够
-    const mark = who + '' + last;
-    if (seen.has(mark)) continue;
-    seen.add(mark);
+    // 一个人只留一条。
+    //
+    // 会话列表里一个人本来就只有一行，读出好几行是因为把日期分隔和
+    // 在线状态那些小块也当成了会话。名单上同一个人连着出现三次，
+    // 内容是昨天在线、2025/10/03 这种，看不出谁说了什么。
+    if (seen.has(who)) continue;
+    seen.add(who);
     out.push({ who: who, text: last });
     if (out.length >= 60) break;
   }
@@ -4364,6 +4374,16 @@ async function finish(job, status) {
 async function startCollect(opt) {
   const words = (opt.keywords || []).map((s) => asText(s).trim()).filter(Boolean);
   if (!words.length) return;
+  // 上一轮还在跑就先把它掐了。
+  //
+  // 不掐的话，那一轮正停在两篇之间的间隔里，间隔一到就照着自己那份
+  // 旧进度跳页面，把新的这一轮顶掉。界面上看是点了开始没反应，
+  // 一直在歇一下，最后报采到零篇。
+  if (Runtime.job && Runtime.job.running) {
+    Runtime.stopFlag = true;
+    await saveJob({ running: false, message: '换了一轮' });
+    await sleep(600);
+  }
   Runtime.stopFlag = false;
   Runtime.pauseFlag = false;
   const taskId = await newTask('采集', words.join('、'), {
@@ -4385,6 +4405,8 @@ async function startCollect(opt) {
     maxComments: opt.maxComments,
     onlyOwner: !!opt.onlyOwner,
     taskId: taskId,
+    // 这一轮的身份。歇在间隔里的老流程醒来时拿它认自己还是不是当前那一轮。
+    startedAt: Date.now(),
     stats: { done: 0, total: words.length * opt.maxNotes, notes: 0, comments: 0 },
     nextAt: 0,
     countdown: 0,
@@ -4448,6 +4470,9 @@ async function drive() {
         await finish(job, '已停止');
         return;
       }
+      // 歇这一会儿工夫，人可能已经按新参数重开了一轮。
+      // 不认这一下的话，这条老流程醒来照旧跳自己那个地址，把新的顶掉。
+      if (Runtime.job && Runtime.job.startedAt !== job.startedAt) return;
       location.href = url;
       return;
     }
@@ -7252,6 +7277,8 @@ window.__xhs = {
   driveSync: driveSync,
   inboxList: inboxList,
   addInboxAll: addInboxAll,
+  clearData: clearData,
+  clearInbox: clearInbox,
   readInboxRows: readInboxRows,
   readNoticeRows: readNoticeRows,
   renderBody: renderBody,

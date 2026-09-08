@@ -33,7 +33,7 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
   'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl, ' +
-  'tooOld, AI, draftFor, draftMany, looksLikeReply, onlyTime };', ctx);
+  'tooOld, AI, draftFor, draftMany, looksLikeReply, onlyTime, NOT_SAID };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -575,6 +575,22 @@ group('哪一行只是时间', () => {
   ok(!A.onlyTime('在吗'), '这是他说的话');
   ok(!A.onlyTime('我这边成都，185，可以认识下吗'), '这也是话');
   ok(!A.onlyTime('昨天去了趟成都'), '话里带昨天两个字，不能算时间行');
+  ok(A.onlyTime('2025/10/03'), '抖音会话里的整日期是四位年');
+  ok(A.onlyTime('2025-10-03'), '横杠写法一样');
+});
+
+// ---------- 哪一行不是他说的话 ----------
+
+// 抖音的会话行里混着在线状态和占位符。照收的话名单上一串昨天在线、
+// 暂不支持该消息类型，看不出谁说了什么。
+group('哪一行不是他说的话', () => {
+  ok(A.NOT_SAID.test('在线'), '在线');
+  ok(A.NOT_SAID.test('昨天在线'), '昨天在线');
+  ok(A.NOT_SAID.test('60分钟内在线'), '几分钟内在线');
+  ok(A.NOT_SAID.test('暂不支持该消息类型'), '占位提示');
+  ok(A.NOT_SAID.test('[分享视频]'), '中括号占位');
+  ok(!A.NOT_SAID.test('我也00年的，在上班，160，方便联系下吗'), '这是真话');
+  ok(!A.NOT_SAID.test('在吗'), '这也是真话');
 });
 
 // ---------- 谁回我了 ----------

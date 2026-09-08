@@ -471,6 +471,16 @@ async function finish(job, status) {
 async function startCollect(opt) {
   const words = (opt.keywords || []).map((s) => asText(s).trim()).filter(Boolean);
   if (!words.length) return;
+  // 上一轮还在跑就先把它掐了。
+  //
+  // 不掐的话，那一轮正停在两篇之间的间隔里，间隔一到就照着自己那份
+  // 旧进度跳页面，把新的这一轮顶掉。界面上看是点了开始没反应，
+  // 一直在歇一下，最后报采到零篇。
+  if (Runtime.job && Runtime.job.running) {
+    Runtime.stopFlag = true;
+    await saveJob({ running: false, message: '换了一轮' });
+    await sleep(600);
+  }
   Runtime.stopFlag = false;
   Runtime.pauseFlag = false;
   const taskId = await newTask('采集', words.join('、'), {
@@ -492,6 +502,8 @@ async function startCollect(opt) {
     maxComments: opt.maxComments,
     onlyOwner: !!opt.onlyOwner,
     taskId: taskId,
+    // 这一轮的身份。歇在间隔里的老流程醒来时拿它认自己还是不是当前那一轮。
+    startedAt: Date.now(),
     stats: { done: 0, total: words.length * opt.maxNotes, notes: 0, comments: 0 },
     nextAt: 0,
     countdown: 0,
@@ -555,6 +567,9 @@ async function drive() {
         await finish(job, '已停止');
         return;
       }
+      // 歇这一会儿工夫，人可能已经按新参数重开了一轮。
+      // 不认这一下的话，这条老流程醒来照旧跳自己那个地址，把新的顶掉。
+      if (Runtime.job && Runtime.job.startedAt !== job.startedAt) return;
       location.href = url;
       return;
     }
