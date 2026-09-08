@@ -97,6 +97,11 @@ async function readOneStop(job, stop) {
     // 这一栏刚点开，等它把列表铺出来再读
     await syncNap(2000);
   }
+  // 等列表真的铺出来再读。
+  //
+  // 页面外壳几百毫秒就有字了，会话和通知是后面才挂上去的。壳一出来就读，
+  // 五轮全落在空页面上，界面上说收到零条，其实列表底下摆着几十条。
+  await waitRows(stop);
   let got = 0;
   const mine = await sentByName();
   for (let i = 0; i < stop.rounds; i++) {
@@ -110,6 +115,19 @@ async function readOneStop(job, stop) {
     await syncNap(1500);
   }
   return got;
+}
+
+// 读出东西来了没有。最多等二十秒，等不到也接着往下走，
+// 让下面那几轮自己碰运气，总比整站跳过强。
+async function waitRows(stop) {
+  for (let i = 0; i < 14; i++) {
+    if (syncStopped()) return;
+    const rows = stop.at === 'chat'
+      ? readInboxRows()
+      : readNoticeRows(stop.assume);
+    if (rows.length) return;
+    await syncNap(1500);
+  }
 }
 
 // 发过的那些人，按昵称索引。读之前查一次就够。

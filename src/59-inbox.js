@@ -13,10 +13,19 @@
 //   赞了你的笔记昨天 18:48
 // 说明和时间粘在一起，按整行比时间的话一条都认不出来，
 // 所以只要行里带时间就算。
-const STAMP = /(刚刚|昨天|前天|今天|星期.|周.|[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}[-月][0-9]{1,2}日?|[0-9]+ ?(分钟|小时|天|周|月|个月|年)前)/;
+const STAMP = /(刚刚|昨天|前天|今天|星期.|周.|[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}[-月/][0-9]{1,2}日?|[0-9]+ ?(分钟|小时|天|周|月|个月|年)前)/;
 
-// 整行就是个时间的，那一行没内容，读的时候要扔掉。
-const CLOCK = new RegExp('^' + STAMP.source + '$');
+// 这一行是不是只有时间，没有内容。
+//
+// 不能拿整行去比时间。抖音一条会话的时间是「昨天 00:42」，日期是 09/01
+// 这种斜杠写法，按整行比一条都对不上，会话列表明明摆在那儿也读不出来。
+// 把行里的时间片段全抠掉，剩不下字就是纯时间那一行。
+function onlyTime(s) {
+  const left = asText(s)
+    .replace(new RegExp(STAMP.source, 'g'), '')
+    .replace(/\s+/g, '');
+  return left === '';
+}
 
 // 通知里那句说明。赞和回复的写法各家不同，都认一遍。
 const NOTICE_KEY = /赞了你|点赞了你|赞了我|收藏了你|收藏了|回复了|回复你|评论了你|@了你|给你发消息|发来消息/;
@@ -46,7 +55,7 @@ function readInboxRows() {
       const ls = inboxLines(e);
       if (!ls) continue;
       if (ls.length < 2 || ls.length > 5) continue;
-      if (!ls.some((x) => CLOCK.test(x))) continue;
+      if (!ls.some(onlyTime)) continue;
       // 父块和子块常常长得一模一样，谁都不排除，最后靠去重收尾。
       //
       // 原来是发现里面还有同样长相的子块就跳过这一层，结果每条会话
@@ -65,7 +74,7 @@ function readInboxRows() {
     const who = lines[0].slice(0, 30);
     const last = lines.slice(1)
       .filter((x) => !/^\d+$/.test(x))
-      .filter((x) => !CLOCK.test(x))
+      .filter((x) => !onlyTime(x))
       .join(' ')
       .slice(0, 80);
     if (!last) continue;
@@ -184,7 +193,7 @@ function readNoticeRows(assumeKind) {
     const rest = lines
       .filter((x) => x !== who)
       .filter((x) => !NOTICE_KEY.test(x))
-      .filter((x) => !CLOCK.test(x))
+      .filter((x) => !onlyTime(x))
       .filter((x) => !/^(回复|删除|查看|关注|回关)$/.test(x));
 
     // 剩下的行里，最后一行往往是被他针对的那一条，也就是我自己发的。

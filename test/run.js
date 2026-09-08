@@ -33,7 +33,7 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
   'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl, ' +
-  'tooOld, AI, draftFor, draftMany, looksLikeReply };', ctx);
+  'tooOld, AI, draftFor, draftMany, looksLikeReply, onlyTime };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -562,6 +562,20 @@ group('模型筛人', () => {
 });
 
 // ---------- 没密钥也要出话 ----------
+
+// ---------- 哪一行只是时间 ----------
+
+group('哪一行只是时间', () => {
+  ok(A.onlyTime('18:29'), '小红书是光秃秃一个钟点');
+  ok(A.onlyTime('昨天'), '昨天');
+  ok(A.onlyTime('昨天 00:42'), '抖音把日子和钟点写在一行');
+  ok(A.onlyTime('09/01'), '抖音的日期是斜杠写法');
+  ok(A.onlyTime('8月31日'), '带月日的中文写法');
+  ok(A.onlyTime('3天前'), '几天前');
+  ok(!A.onlyTime('在吗'), '这是他说的话');
+  ok(!A.onlyTime('我这边成都，185，可以认识下吗'), '这也是话');
+  ok(!A.onlyTime('昨天去了趟成都'), '话里带昨天两个字，不能算时间行');
+});
 
 // ---------- 谁回我了 ----------
 

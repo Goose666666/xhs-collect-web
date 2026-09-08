@@ -371,6 +371,12 @@ async function collectComments(maxComments) {
   const rows = [];
   const seen = new Set();
   let idle = 0;
+  // 先把评论区点开。
+  //
+  // 抖音作品页右边默认停在相关推荐那一栏，评论那一栏不点一下根本不请求，
+  // 等多久都是零条。发评论那边一直有这一步，采集这边漏了。
+  const opened = openComments();
+  if (opened.indexOf('ok') !== 0) await say('评论区没点开 ' + opened);
   await waitBucket('comment', waitCommentMs);
   while (rows.length < maxComments && idle < commentGiveUp && !shouldStop()) {
     let added = drainComments('comment', seen, rows);
