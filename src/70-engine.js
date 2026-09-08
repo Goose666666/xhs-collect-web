@@ -258,7 +258,7 @@ async function stepSearch(job) {
         const risk = riskWord();
         if (isLoginWall(risk)) {
           await say('登录失效了，页面在要登录，整轮停下');
-          await finish(job, '已停止');
+          await finish(job, '登录失效停下了');
           return;
         }
         if (risk) {
@@ -471,14 +471,20 @@ async function finish(job, status) {
   Runtime.pauseFlag = false;
   const stats = (job && job.stats) || { notes: 0, comments: 0 };
   await finishTask(job && job.taskId, status, stats.notes, stats.comments);
+  const line = status + '，笔记 ' + stats.notes + ' 评论 ' + stats.comments;
   await saveJob({
     running: false,
     paused: false,
     phase: '',
     hits: [],
     countdown: 0,
-    message: status + '，笔记 ' + stats.notes + ' 评论 ' + stats.comments,
-    log: logLine(job || {}, status + '，笔记 ' + stats.notes + ' 评论 ' + stats.comments),
+    message: line,
+    // 日志从当前这份取，不能拿传进来的那份。
+    //
+    // 传进来的是停下来之前的快照，收尾时照它写回去，
+    // 中间那句登录失效了、撞风控了全被抹掉，
+    // 界面上只剩一句已停止，看不出到底为什么停。
+    log: logLine(Runtime.job || job || {}, line),
   });
 }
 

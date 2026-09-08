@@ -250,6 +250,22 @@ def main():
         check(back, '刷新之后接着跑完了')
         check(len(hits['explore']) > before, '刷新之后还是把帖子打开了')
 
+        print('停下来的原因要留在日志里')
+        # 收尾时照传进来那份快照写日志的话，中间那句登录失效了、撞风控了
+        # 全被抹掉，界面上只剩一句已停止，看不出为什么停。
+        got = page.evaluate("""async () => {
+          const R = window.__xhs.Runtime;
+          // 摆一份正在跑的进度，里面有一句说明为什么要停
+          R.job = Object.assign({}, R.job || {}, {
+            running: true,
+            stats: { done: 0, total: 1, notes: 0, comments: 0 },
+            log: ['00:00:00 登录失效了，页面在要登录'],
+          });
+          await window.__xhs.stopCollect();
+          return (window.__xhs.Runtime.job.log || []).join(' | ');
+        }""")
+        check('登录失效' in got, '那句原因还在日志里 ' + got[-70:])
+
         print('中途停下')
         page.evaluate("""async () => {
           await window.__xhs.startCollect({

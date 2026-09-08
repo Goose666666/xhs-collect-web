@@ -138,6 +138,8 @@ window.__xhs = {
   // 发送那条路上的几步，单独露出来好一步步验。
   // fillOnly 只把话填进框里，不点发送。
   openComments: openComments,
+  userUrlHere: userUrlHere,
+  canOpenProfile: canOpenProfile,
   openDm: openDm,
   fillOnly: fillOnly,
   chatBoxReady: chatBoxReady,
