@@ -402,8 +402,14 @@ async function nextNote(freshNotes, freshComments, title) {
   stats.done += 1;
   stats.notes += freshNotes || 0;
   stats.comments += freshComments || 0;
+  // 帖子自己标了多少条评论也记上。
+  //
+  // 只报采到几条的话，零条分不清是这篇本来就没人说话，
+  // 还是评论区没打开、接口没等到。差一个数就得重跑一整轮去猜。
+  const said = asInt((currentHit(job) || {}).comment_cnt);
   const line = '[' + currentWord(job) + ' ' + (job.ni + 1) + '/' + job.hits.length + '] ' +
     (title ? title + ' ' : '') + '新评论 ' + (freshComments || 0) +
+    (said ? '，页面标着 ' + said : '') +
     '，累计 ' + stats.comments;
   await saveJob({ ni: job.ni + 1, stats: stats, message: line, log: logLine(job, line) });
   await goNext();

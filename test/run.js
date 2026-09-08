@@ -563,6 +563,53 @@ group('模型筛人', () => {
 
 // ---------- 没密钥也要出话 ----------
 
+// ---------- 采集的节奏 ----------
+
+// 这几个数必须跟手机版 lib/local/limits.dart 一样。
+// 网页版慢一截的话，同一个人两边采出来的量对不上，还会被嫌弃不如自己搜。
+group('采集的节奏', () => {
+  eq(A.Limits.crawlSize, 30, '默认采三十篇');
+  eq(A.Limits.crawlMinutes, 1, '默认一分钟采完');
+  const gaps = [];
+  for (let i = 0; i < 200; i++) gaps.push(A.Limits.gapSeconds());
+  ok(Math.min(...gaps) >= 1, '再快也隔一秒，不然评论来不及渲染');
+  ok(Math.max(...gaps) <= 4, '默认这一档不该出现四秒以上的间隔');
+  ok(new Set(gaps).size > 1, '间隔要浮动，固定节奏本身就是特征');
+});
+
+// ---------- 话术口径 ----------
+
+// 这几条是对接人定死的，跟手机版必须一字不差。
+group('话术口径', () => {
+  const many = [];
+  for (let i = 0; i < 60; i++) {
+    many.push(A.makeReply('本人98年想找个认真谈的对象', 'u' + i, '成都'));
+  }
+  const all = many.join(' ');
+  ok(!/联系方式|微信|加我|手机号/.test(all), '不许出现要联系方式那类词，0906 就是这么被禁言的');
+  const hs = all.match(/1[6-9][0-9]/g) || [];
+  const men = hs.map(Number).filter((h) => h >= 176);
+  ok(men.every((h) => h >= 180 && h <= 188), '男的身高只在 180 到 188 之间 ' + men.join(','));
+});
+
+// ---------- 发送的节奏 ----------
+
+// 这几个数也必须跟手机版 lib/local/limits.dart 一样。
+// 两边不一致的话，同一个号在手机上发得慢在网页上发得快，风险全落在快的那头。
+group('发送的节奏', () => {
+  eq(A.kMinGapSeconds, 30, '两条之间至少三十秒，0906 一分钟两条被禁言');
+  eq(A.Limits.batchSize, 20, '一批默认二十个');
+  eq(A.Limits.batchMinutes, 20, '二十分钟发完');
+  eq(A.Limits.clampBatchSize(999), 500, '总数不设实际上限，只防手滑');
+  ok(!A.Limits.tooFast(), '二十分钟二十个是正常节奏，不该被提醒');
+  A.Limits.batchMinutes = 5;
+  ok(A.Limits.tooFast(), '五分钟发二十个就该说一句');
+  A.Limits.batchMinutes = 20;
+  const plan = A.Limits.plan(20);
+  eq(plan.length, 19, '二十个人切十九段');
+  ok(Math.min(...plan) >= 30, '再挤也不能短过最小间隔');
+});
+
 // ---------- 哪一行只是时间 ----------
 
 group('哪一行只是时间', () => {

@@ -1685,19 +1685,23 @@ Trade.saveTalks = async function () {
 // 所以只设两个数：这一轮采几篇，用多久采完。中间的间隔由程序随机切，
 // 每段长短不一，采完就停。这跟手机版 lib/local/limits.dart 是同一套算法。
 
-const kCrawlSizeDefault = 50;
-const kCrawlSizeMin = 5;
+const kCrawlSizeDefault = 30;
+const kCrawlSizeMin = 1;
 const kCrawlSizeMax = 300;
 
-const kCrawlMinutesDefault = 30;
-const kCrawlMinutesMin = 5;
+// 三十篇一分钟，平均两秒一篇。
+//
+// 原来是五十篇三十分钟，三十多秒一篇，加上读评论那几十秒，一篇要一分多钟，
+// 人说还不如自己去搜。发出去的每一条平台都盯着，采集只是看，不用这么怕。
+const kCrawlMinutesDefault = 1;
+const kCrawlMinutesMin = 1;
 const kCrawlMinutesMax = 480;
 
 // 两篇之间至少隔多少秒。
 //
 // 不是为了慢，是防止翻得比页面加载还快，那样评论根本来不及渲染，
 // 抓回来全是空的。采集只是看，不留痕，所以可以比发东西快得多。
-const kCrawlMinGapSeconds = 3;
+const kCrawlMinGapSeconds = 1;
 
 const Limits = {
   crawlSize: kCrawlSizeDefault,
@@ -1788,7 +1792,8 @@ const commentGiveUp = 8;
 // 一批发几个人。
 const kBatchSizeDefault = 20;
 const kBatchSizeMin = 1;
-const kBatchSizeMax = 60;
+// 总数不设上限，只卡间隔。这个数只是防止手滑填出天文数字。
+const kBatchSizeMax = 500;
 
 // 这一批用多少分钟发完。
 const kBatchMinutesDefault = 20;
@@ -1799,16 +1804,15 @@ const kBatchMinutesMax = 240;
 //
 // 不是为了慢，是防止程序卡住或者页面秒开时瞬间连发好几条。
 // 真人再快也要看一眼再点。
-const kMinGapSeconds = 20;
-
-// 一天最多发几条评论。私信的上限按一批算，见 batchSize。
-const kCommentPerDay = 10;
+// 发送这一头不能快。2026-09-06 试过一分钟两条，号当场被禁言。
+// 采集只看不动手可以快，发出去的每一条平台都盯着。
+const kMinGapSeconds = 30;
 
 // 平均每条快到什么程度就该提醒一句。
 //
-// 比最小间隔宽一些。二十分钟发六十个平均二十秒，刚好压在最小间隔上，
-// 按最小间隔判的话它算合格，可那个速度已经不是人能做到的了。
-const kSaneGapSeconds = 30;
+// 比最小间隔宽一些。二十分钟发二十个平均一分钟，这个节奏不该被提醒，
+// 再快就说一句。
+const kSaneGapSeconds = 45;
 
 Limits.batchSize = kBatchSizeDefault;
 Limits.batchMinutes = kBatchMinutesDefault;
@@ -2247,10 +2251,17 @@ function meGender(theirs) {
 // 对方划了身高线就压着线往上报一档，没划线报 185。
 // 读不出对方性别时按男生走，只报身高，那样两边都不算说错。
 function figure(me, want) {
-  if (me === '女') return '160，85斤';
-  // 封在 190。对方写 195 以上就顺着报 200 的话，一眼就知道是机器。
-  const h = want !== null && want >= 185 ? roundUp5(want) : 185;
-  return String(h > 190 ? 190 : h);
+  if (me === '女') {
+    // 女生也照对方划的线报。人家写着要 165 以上，回一句 160 是白回。
+    // 封在 175，再高就不像在说一个具体的人了。
+    const h = want && want > 160 ? (want > 175 ? 175 : want) : 160;
+    return h + '，85斤';
+  }
+  // 对方划了线就照那条线报。写着要 185，回一句 190 是在拔高，
+  // 人家再问一遍就露馅。没划线才报 185。
+  // 男的只在 180 到 188 之间报，是对接人定的口径：175 不要发。
+  const h = want && want > 185 ? want : 185;
+  return String(h > 188 ? 188 : (h < 180 ? 180 : h));
 }
 
 // 从对方那段话里挑一句能接的。有这一句，回复才像看过帖子的人写的。
@@ -2274,7 +2285,11 @@ function echoOf(text) {
 
 const kStateWords = ['在实习', '刚工作', '工作稳定', '在上班', '刚毕业'];
 const kStudyWords = ['在读考研', '大四准备考研', '研一在读', '还在读书'];
-const kAskWords = ['可以联系下吗', '方便联系下吗', '可以认识下吗', '能加个联系方式吗'];
+// 结尾只问认不认识，不要联系方式。
+//
+// 0906 那次被禁言，发出去的话里带着能加个联系方式吗。平台把要联系方式
+// 当成引流，一条就够。想认识是正常搭话，加微信是拉人走。
+const kAskWords = ['可以认识下吗', '方便认识一下吗', '有空聊聊吗', '有兴趣认识下吗'];
 
 // 从种子里挑一个。
 //
@@ -4305,8 +4320,14 @@ async function nextNote(freshNotes, freshComments, title) {
   stats.done += 1;
   stats.notes += freshNotes || 0;
   stats.comments += freshComments || 0;
+  // 帖子自己标了多少条评论也记上。
+  //
+  // 只报采到几条的话，零条分不清是这篇本来就没人说话，
+  // 还是评论区没打开、接口没等到。差一个数就得重跑一整轮去猜。
+  const said = asInt((currentHit(job) || {}).comment_cnt);
   const line = '[' + currentWord(job) + ' ' + (job.ni + 1) + '/' + job.hits.length + '] ' +
     (title ? title + ' ' : '') + '新评论 ' + (freshComments || 0) +
+    (said ? '，页面标着 ' + said : '') +
     '，累计 ' + stats.comments;
   await saveJob({ ni: job.ni + 1, stats: stats, message: line, log: logLine(job, line) });
   await goNext();
@@ -4563,7 +4584,9 @@ async function pickTargets(all, kind) {
   // 判的是对方原话。拿要发出去的话术去判，等于问我们自己有没有意向。
   const r = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   const done = await triedIds(kind);
-  const left = kind === '私信' ? Limits.batchSize : kCommentPerDay;
+  // 不设一天的总数上限，只卡间隔。真人本来就不是均匀发的：刷到一批合适的人
+  // 集中发完，然后放下手机。按天封顶反倒把这个节奏切碎了。
+  const left = Limits.batchSize;
 
   const out = [];
   let skipped = 0;

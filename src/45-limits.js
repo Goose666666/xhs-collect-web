@@ -7,19 +7,23 @@
 // 所以只设两个数：这一轮采几篇，用多久采完。中间的间隔由程序随机切，
 // 每段长短不一，采完就停。这跟手机版 lib/local/limits.dart 是同一套算法。
 
-const kCrawlSizeDefault = 50;
-const kCrawlSizeMin = 5;
+const kCrawlSizeDefault = 30;
+const kCrawlSizeMin = 1;
 const kCrawlSizeMax = 300;
 
-const kCrawlMinutesDefault = 30;
-const kCrawlMinutesMin = 5;
+// 三十篇一分钟，平均两秒一篇。
+//
+// 原来是五十篇三十分钟，三十多秒一篇，加上读评论那几十秒，一篇要一分多钟，
+// 人说还不如自己去搜。发出去的每一条平台都盯着，采集只是看，不用这么怕。
+const kCrawlMinutesDefault = 1;
+const kCrawlMinutesMin = 1;
 const kCrawlMinutesMax = 480;
 
 // 两篇之间至少隔多少秒。
 //
 // 不是为了慢，是防止翻得比页面加载还快，那样评论根本来不及渲染，
 // 抓回来全是空的。采集只是看，不留痕，所以可以比发东西快得多。
-const kCrawlMinGapSeconds = 3;
+const kCrawlMinGapSeconds = 1;
 
 const Limits = {
   crawlSize: kCrawlSizeDefault,
@@ -110,7 +114,8 @@ const commentGiveUp = 8;
 // 一批发几个人。
 const kBatchSizeDefault = 20;
 const kBatchSizeMin = 1;
-const kBatchSizeMax = 60;
+// 总数不设上限，只卡间隔。这个数只是防止手滑填出天文数字。
+const kBatchSizeMax = 500;
 
 // 这一批用多少分钟发完。
 const kBatchMinutesDefault = 20;
@@ -121,16 +126,15 @@ const kBatchMinutesMax = 240;
 //
 // 不是为了慢，是防止程序卡住或者页面秒开时瞬间连发好几条。
 // 真人再快也要看一眼再点。
-const kMinGapSeconds = 20;
-
-// 一天最多发几条评论。私信的上限按一批算，见 batchSize。
-const kCommentPerDay = 10;
+// 发送这一头不能快。2026-09-06 试过一分钟两条，号当场被禁言。
+// 采集只看不动手可以快，发出去的每一条平台都盯着。
+const kMinGapSeconds = 30;
 
 // 平均每条快到什么程度就该提醒一句。
 //
-// 比最小间隔宽一些。二十分钟发六十个平均二十秒，刚好压在最小间隔上，
-// 按最小间隔判的话它算合格，可那个速度已经不是人能做到的了。
-const kSaneGapSeconds = 30;
+// 比最小间隔宽一些。二十分钟发二十个平均一分钟，这个节奏不该被提醒，
+// 再快就说一句。
+const kSaneGapSeconds = 45;
 
 Limits.batchSize = kBatchSizeDefault;
 Limits.batchMinutes = kBatchMinutesDefault;

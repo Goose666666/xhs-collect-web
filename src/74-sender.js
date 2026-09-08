@@ -57,7 +57,9 @@ async function pickTargets(all, kind) {
   // 判的是对方原话。拿要发出去的话术去判，等于问我们自己有没有意向。
   const r = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   const done = await triedIds(kind);
-  const left = kind === '私信' ? Limits.batchSize : kCommentPerDay;
+  // 不设一天的总数上限，只卡间隔。真人本来就不是均匀发的：刷到一批合适的人
+  // 集中发完，然后放下手机。按天封顶反倒把这个节奏切碎了。
+  const left = Limits.batchSize;
 
   const out = [];
   let skipped = 0;
