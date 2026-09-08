@@ -3865,24 +3865,30 @@ function readNoteState(noteId) {
 //
 // 两处都滚：窗口本身，以及页面里最高的那个能滚的容器。
 // 笔记详情页的评论区是独立滚动容器，只滚窗口的话评论一条都翻不出来。
+// 容器不能只滚最高的那一个：详情页常有外层弹窗套着评论列表两层滚动区，
+// 最高的那个是外层，滚它评论区一动不动，翻半天还是开头那十几条。
+// 前三个都滚，多滚的那两个本来就滚不动，没有代价。
 function scrollSome(dy) {
   try {
-    const box = [...document.querySelectorAll('div')]
+    const boxes = [...document.querySelectorAll('div')]
       .filter((e) => e.scrollHeight - e.clientHeight > 200 &&
         /auto|scroll/.test(getComputedStyle(e).overflowY))
-      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
-    if (box) box.scrollTop += dy;
+      .sort((a, b) => b.scrollHeight - a.scrollHeight)
+      .slice(0, 3);
+    for (const b of boxes) b.scrollTop += dy;
     window.scrollBy(0, dy);
   } catch (e) {}
 }
 
 // 点开展开更多回复，把二级评论翻出来。
-// 一次最多点三个，点太多也是一种异常节奏。
+//
+// 一次点六个。二级评论里的人跟一级一样是自己来搭话的，漏掉它们等于
+// 每篇少掉一半的人。点太多确实是异常节奏，但六个还在人翻评论的范围里。
 function expandReplies() {
   try {
     const hit = [...document.querySelectorAll('div,span,a')]
       .filter((e) => e.offsetParent !== null && /展开.{0,6}条回复/.test(e.innerText || ''));
-    hit.slice(0, 3).forEach((e) => {
+    hit.slice(0, 6).forEach((e) => {
       try { e.click(); } catch (err) {}
     });
     return hit.length;
@@ -4261,7 +4267,13 @@ async function stepNote(job) {
     detail = [hit];
   }
 
-  const comments = job.onlyOwner ? [] : await collectComments(job.maxComments);
+  // 页面自己标了多少条就照着收，收齐了立刻走。
+  //
+  // 不给这个数的话，每篇都要空转八轮才肯罢休，一篇多花一分钟。
+  // 一篇只有一条评论的帖子最吃亏，等的时间是读的六十倍。
+  const comments = job.onlyOwner
+    ? []
+    : await collectComments(job.maxComments, asInt(hit.comment_cnt));
   if (shouldStop()) return;
 
   // 合并：详情比摘要全，但摘要里的关键词和 token 要留着
@@ -4285,10 +4297,15 @@ async function stepNote(job) {
 }
 
 // 在已经打开的详情页里翻评论区。
-async function collectComments(maxComments) {
+// said 是页面标着的评论条数，收齐了就不再等。零表示不知道。
+async function collectComments(maxComments, said) {
   const rows = [];
   const seen = new Set();
   let idle = 0;
+  // 页面说一条都没有就别进去等了
+  if (said === 0 && arguments.length > 1) return rows;
+  const enough = () => rows.length >= maxComments ||
+    (said > 0 && rows.length >= said);
   // 先把评论区点开。
   //
   // 抖音作品页右边默认停在相关推荐那一栏，评论那一栏不点一下根本不请求，
@@ -4296,11 +4313,11 @@ async function collectComments(maxComments) {
   const opened = openComments();
   if (opened.indexOf('ok') !== 0) await say('评论区没点开 ' + opened);
   await waitBucket('comment', waitCommentMs);
-  while (rows.length < maxComments && idle < commentGiveUp && !shouldStop()) {
+  while (!enough() && idle < commentGiveUp && !shouldStop()) {
     let added = drainComments('comment', seen, rows);
     added += drainComments('sub_comment', seen, rows);
     idle = added > 0 ? 0 : idle + 1;
-    if (rows.length >= maxComments) break;
+    if (enough()) break;
     expandReplies();
     scrollSome(randInt(1000, 1400));
     // 空转过一次就多等一会儿。评论是懒加载的，翻到底之后

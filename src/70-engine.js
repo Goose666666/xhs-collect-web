@@ -343,7 +343,13 @@ async function stepNote(job) {
     detail = [hit];
   }
 
-  const comments = job.onlyOwner ? [] : await collectComments(job.maxComments);
+  // 页面自己标了多少条就照着收，收齐了立刻走。
+  //
+  // 不给这个数的话，每篇都要空转八轮才肯罢休，一篇多花一分钟。
+  // 一篇只有一条评论的帖子最吃亏，等的时间是读的六十倍。
+  const comments = job.onlyOwner
+    ? []
+    : await collectComments(job.maxComments, asInt(hit.comment_cnt));
   if (shouldStop()) return;
 
   // 合并：详情比摘要全，但摘要里的关键词和 token 要留着
@@ -367,10 +373,15 @@ async function stepNote(job) {
 }
 
 // 在已经打开的详情页里翻评论区。
-async function collectComments(maxComments) {
+// said 是页面标着的评论条数，收齐了就不再等。零表示不知道。
+async function collectComments(maxComments, said) {
   const rows = [];
   const seen = new Set();
   let idle = 0;
+  // 页面说一条都没有就别进去等了
+  if (said === 0 && arguments.length > 1) return rows;
+  const enough = () => rows.length >= maxComments ||
+    (said > 0 && rows.length >= said);
   // 先把评论区点开。
   //
   // 抖音作品页右边默认停在相关推荐那一栏，评论那一栏不点一下根本不请求，
@@ -378,11 +389,11 @@ async function collectComments(maxComments) {
   const opened = openComments();
   if (opened.indexOf('ok') !== 0) await say('评论区没点开 ' + opened);
   await waitBucket('comment', waitCommentMs);
-  while (rows.length < maxComments && idle < commentGiveUp && !shouldStop()) {
+  while (!enough() && idle < commentGiveUp && !shouldStop()) {
     let added = drainComments('comment', seen, rows);
     added += drainComments('sub_comment', seen, rows);
     idle = added > 0 ? 0 : idle + 1;
-    if (rows.length >= maxComments) break;
+    if (enough()) break;
     expandReplies();
     scrollSome(randInt(1000, 1400));
     // 空转过一次就多等一会儿。评论是懒加载的，翻到底之后
