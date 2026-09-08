@@ -7304,6 +7304,17 @@ window.__xhs = {
   clearInbox: clearInbox,
   readInboxRows: readInboxRows,
   readNoticeRows: readNoticeRows,
+  // 发送那条路上的几步，单独露出来好一步步验。
+  // fillOnly 只把话填进框里，不点发送。
+  openComments: openComments,
+  openDm: openDm,
+  fillOnly: fillOnly,
+  chatBoxReady: chatBoxReady,
+  runFunnel: runFunnel,
+  draftFor: draftFor,
+  peopleCsv: peopleCsv,
+  counts: counts,
+  inboxCounts: inboxCounts,
   renderBody: renderBody,
   siteNow: siteNow,
   UI: UI,
