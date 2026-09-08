@@ -305,3 +305,31 @@ function looksLikeReply(last, mine) {
   if (a === b) return false;
   return a.indexOf(b) < 0 && b.indexOf(a) < 0;
 }
+
+// ---------- 取新消息走哪几站 ----------
+
+// 一趟按顺序走这几站。
+//
+// tab 是通知页上要点的那一栏，赞和评论各在一栏，不点一下就看不到
+// 谁点了赞，而点赞的人恰恰是最该私信的。
+// assume 是这一栏里判不出类型时按哪一类算。
+const SYNC_STOPS = [
+  { at: 'chat', kind: '私信', tab: '', assume: '', rounds: 5 },
+  { at: 'notice', kind: '回复', tab: '评论和@', assume: '回复', rounds: 3 },
+  { at: 'notice', kind: '点赞', tab: '赞和收藏', assume: '点赞', rounds: 3 },
+];
+
+// 小红书网页版的私信页是 /chat，不是 /im 也不是 /messages，
+// 那两个都直接跳 404。抖音的是 /chat。
+//
+// 抖音没有单独的通知页，赞和评论在首页右上角那个铃铛里，那个面板只认
+// 真的鼠标悬停，用户脚本派不出来，所以抖音只同步私信。
+function syncWantUrl(stop, dy) {
+  const onDy = dy === undefined ? onDouyin() : dy;
+  if (onDy) {
+    return stop.at === 'chat' ? 'https://www.douyin.com/chat' : '';
+  }
+  return stop.at === 'chat'
+    ? 'https://www.xiaohongshu.com/chat'
+    : 'https://www.xiaohongshu.com/notification';
+}

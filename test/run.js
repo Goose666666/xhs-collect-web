@@ -33,7 +33,8 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
   'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl, ' +
-  'tooOld, AI, draftFor, draftMany, looksLikeReply, onlyTime, NOT_SAID };', ctx);
+  'tooOld, AI, draftFor, draftMany, looksLikeReply, onlyTime, NOT_SAID, ' +
+  'SYNC_STOPS, syncWantUrl };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -562,6 +563,22 @@ group('模型筛人', () => {
 });
 
 // ---------- 没密钥也要出话 ----------
+
+// ---------- 取新消息走哪几站 ----------
+
+// 抖音没有通知页：赞和评论在首页右上角那个铃铛里，那个面板只认真的
+// 鼠标悬停，用户脚本派不出来，所以抖音只同步私信。
+group('取新消息走哪几站', () => {
+  eq(A.SYNC_STOPS.length, 3, '一趟三站：私信、评论和@、赞和收藏');
+  const xhs = A.SYNC_STOPS.map((s) => A.syncWantUrl(s, false));
+  ok(xhs.every(Boolean), '小红书三站都有地址 ' + JSON.stringify(xhs));
+  ok(xhs[0].indexOf('/chat') > 0, '私信页是 chat，不是 im 也不是 messages');
+  ok(xhs[1].indexOf('/notification') > 0, '通知页');
+  const dy = A.SYNC_STOPS.map((s) => A.syncWantUrl(s, true));
+  ok(dy[0].indexOf('douyin.com/chat') > 0, '抖音私信页');
+  eq(dy[1], '', '抖音通知那两站没有地址，要跳过去');
+  eq(dy[2], '', '第三站也是');
+});
 
 // ---------- 采集的节奏 ----------
 

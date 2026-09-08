@@ -3643,6 +3643,34 @@ function looksLikeReply(last, mine) {
   return a.indexOf(b) < 0 && b.indexOf(a) < 0;
 }
 
+// ---------- 取新消息走哪几站 ----------
+
+// 一趟按顺序走这几站。
+//
+// tab 是通知页上要点的那一栏，赞和评论各在一栏，不点一下就看不到
+// 谁点了赞，而点赞的人恰恰是最该私信的。
+// assume 是这一栏里判不出类型时按哪一类算。
+const SYNC_STOPS = [
+  { at: 'chat', kind: '私信', tab: '', assume: '', rounds: 5 },
+  { at: 'notice', kind: '回复', tab: '评论和@', assume: '回复', rounds: 3 },
+  { at: 'notice', kind: '点赞', tab: '赞和收藏', assume: '点赞', rounds: 3 },
+];
+
+// 小红书网页版的私信页是 /chat，不是 /im 也不是 /messages，
+// 那两个都直接跳 404。抖音的是 /chat。
+//
+// 抖音没有单独的通知页，赞和评论在首页右上角那个铃铛里，那个面板只认
+// 真的鼠标悬停，用户脚本派不出来，所以抖音只同步私信。
+function syncWantUrl(stop, dy) {
+  const onDy = dy === undefined ? onDouyin() : dy;
+  if (onDy) {
+    return stop.at === 'chat' ? 'https://www.douyin.com/chat' : '';
+  }
+  return stop.at === 'chat'
+    ? 'https://www.xiaohongshu.com/chat'
+    : 'https://www.xiaohongshu.com/notification';
+}
+
 
 // ===== 60-hook.js =====
 // 钩住页面自己发的接口请求。
@@ -5106,17 +5134,6 @@ async function nextTarget(got) {
 
 const SYNC_KEY = 'sync';
 
-// 一趟按顺序走这几站。
-//
-// tab 是通知页上要点的那一栏，赞和评论各在一栏，不点一下就看不到
-// 谁点了赞，而点赞的人恰恰是最该私信的。
-// assume 是这一栏里判不出类型时按哪一类算。
-const SYNC_STOPS = [
-  { at: 'chat', kind: '私信', tab: '', assume: '', rounds: 5 },
-  { at: 'notice', kind: '回复', tab: '评论和@', assume: '回复', rounds: 3 },
-  { at: 'notice', kind: '点赞', tab: '赞和收藏', assume: '点赞', rounds: 3 },
-];
-
 const Sync = {
   job: null,
   stopFlag: false,
@@ -5154,20 +5171,6 @@ async function saySync(line) {
 
 function syncStop(job) {
   return SYNC_STOPS[asInt(job.step)] || null;
-}
-
-// 小红书网页版的私信页是 /chat，不是 /im 也不是 /messages，
-// 那两个都直接跳 404。抖音的是 /chat。
-//
-// 抖音没有单独的通知页，赞和评论在首页右上角那个铃铛里，那个面板只认
-// 真的鼠标悬停，用户脚本派不出来，所以抖音只同步私信。
-function syncWantUrl(stop) {
-  if (onDouyin()) {
-    return stop.at === 'chat' ? 'https://www.douyin.com/chat' : '';
-  }
-  return stop.at === 'chat'
-    ? 'https://www.xiaohongshu.com/chat'
-    : 'https://www.xiaohongshu.com/notification';
 }
 
 function onSyncPage(stop) {
@@ -5360,8 +5363,13 @@ async function driveSync() {
     }
     const url = syncWantUrl(stop);
     if (!url) {
-      // 抖音没有通知页，剩下的站直接跳过
+      // 抖音没有通知页，这一站直接跳过。
+      //
+      // 跳过之后要自己接着走下一站。原来跳完就返回，没人再推一把，
+      // 任务永远停在在跑那个状态：消息页一直显示进度条，五档看不见，
+      // 每开一个页面还会接着续跑。
       await nextStop(job, 0);
+      setTimeout(() => { driveSync(); }, 200);
       return;
     }
     if (!onSyncPage(stop)) {
