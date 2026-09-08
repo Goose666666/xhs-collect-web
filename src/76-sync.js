@@ -116,7 +116,7 @@ async function readOneStop(job, stop) {
 //
 // 一条一条重查的话，读五轮就是五次全表，中间界面全卡着。
 async function sentByName() {
-  const rows = await sentList(500, '');
+  const rows = await sentList(500, '', '私信');
   const by = new Map();
   for (const r of rows) {
     if (r.nickname && !by.has(r.nickname)) by.set(r.nickname, r);

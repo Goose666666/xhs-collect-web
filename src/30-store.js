@@ -491,7 +491,8 @@ async function triedIds(kind) {
 // 流水表里只有我们发的话，对方原话在评论表里，按 user_id 关联。
 // 一个人可能在好几条帖子底下都留过言，取最近那条，
 // 因为话术就是照着最近那条生成的。
-async function sentList(limit, trade) {
+// kind 给了就只看那一类，私信或者评论。不给就两样都要。
+async function sentList(limit, trade, kind) {
   const all = await touches(limit || 500);
   const comments = await getAll('comments');
   const byUser = {};
@@ -504,11 +505,13 @@ async function sentList(limit, trade) {
   }
   const out = [];
   for (const t of all) {
-    if (t.kind !== '私信') continue;
+    if (t.kind !== '私信' && t.kind !== '评论') continue;
+    if (kind && t.kind !== kind) continue;
     const c = byUser[t.user_id] || {};
     const tr = asTrade(c.trade || t.trade);
     if (trade && tr !== trade) continue;
     out.push({
+      kind: asText(t.kind),
       nickname: asText(t.nickname),
       user_id: asText(t.user_id),
       text: asText(t.text),

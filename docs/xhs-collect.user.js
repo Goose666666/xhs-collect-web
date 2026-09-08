@@ -1404,7 +1404,8 @@ async function triedIds(kind) {
 // 流水表里只有我们发的话，对方原话在评论表里，按 user_id 关联。
 // 一个人可能在好几条帖子底下都留过言，取最近那条，
 // 因为话术就是照着最近那条生成的。
-async function sentList(limit, trade) {
+// kind 给了就只看那一类，私信或者评论。不给就两样都要。
+async function sentList(limit, trade, kind) {
   const all = await touches(limit || 500);
   const comments = await getAll('comments');
   const byUser = {};
@@ -1417,11 +1418,13 @@ async function sentList(limit, trade) {
   }
   const out = [];
   for (const t of all) {
-    if (t.kind !== '私信') continue;
+    if (t.kind !== '私信' && t.kind !== '评论') continue;
+    if (kind && t.kind !== kind) continue;
     const c = byUser[t.user_id] || {};
     const tr = asTrade(c.trade || t.trade);
     if (trade && tr !== trade) continue;
     out.push({
+      kind: asText(t.kind),
       nickname: asText(t.nickname),
       user_id: asText(t.user_id),
       text: asText(t.text),
@@ -5129,7 +5132,7 @@ async function readOneStop(job, stop) {
 //
 // 一条一条重查的话，读五轮就是五次全表，中间界面全卡着。
 async function sentByName() {
-  const rows = await sentList(500, '');
+  const rows = await sentList(500, '', '私信');
   const by = new Map();
   for (const r of rows) {
     if (r.nickname && !by.has(r.nickname)) by.set(r.nickname, r);
@@ -5348,8 +5351,8 @@ const PANEL_CSS = `
 .xhsc-btn:disabled { opacity: .45; }
 .xhsc-btns { display: flex; gap: 10px; margin: 14px 0; }
 .xhsc-btns .xhsc-btn { flex: 1; }
-.xhsc-nums { display: flex; gap: 10px; margin-bottom: 12px; }
-.xhsc-num { flex: 1; padding: 11px 0; text-align: center; border-radius: 12px;
+.xhsc-nums { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.xhsc-num { flex: 1 1 28%; padding: 11px 0; text-align: center; border-radius: 12px;
   background: #fff; border: 1px solid #eee; cursor: pointer; }
 .xhsc-num.on { background: var(--xc-soft); border-color: transparent; }
 .xhsc-num b { display: block; font-size: 20px; font-weight: 700; color: #111; }
@@ -5478,8 +5481,8 @@ const UI = {
   search: '',
   page: 0,
   pageSize: 40,
-  // 消息页看哪一档：我发的，还是别人找过来的那三类
-  inboxView: 'sent',
+  // 消息页看哪一档：我发出去的两档，还是别人找过来的三档
+  inboxView: '私信过',
   // 帖子页正在看哪一篇。空的时候看的是列表。
   note: null,
   // 正文摊开了没有。有的帖子正文很长，全摊开要占三四屏，
@@ -6476,11 +6479,17 @@ function renderSending(b, job) {
 // 别人找过来的那三类是最该接着聊的：他们对我发的东西有反应，
 // 比评论区里的路人近得多。
 const INBOX_VIEWS = [
-  ['sent', '我发的'],
+  ['私信过', '私信过'],
+  ['评论过', '评论过'],
   ['私信', '私信我的'],
   ['回复', '回复我的'],
   ['点赞', '赞我的'],
 ];
+
+// 我发出去的那两档，跟别人找过来的那三档分开。
+function isSentView(v) {
+  return v === '私信过' || v === '评论过';
+}
 
 async function renderSent(b) {
   // 正在取新消息的时候这一页就是进度
@@ -6490,12 +6499,17 @@ async function renderSent(b) {
   }
 
   b.appendChild(el('div', 'xhsc-empty', '读取中'));
-  const rows = await sentList(500, Trade.now.key);
+  const all = await sentList(500, Trade.now.key);
   const box = await inboxCounts(Trade.now.key);
   b.innerHTML = '';
 
+  const nDm = all.filter((r) => r.kind === '私信').length;
   const nums = el('div', 'xhsc-nums');
-  const nOf = (k) => (k === 'sent' ? rows.length : asInt(box[k]));
+  const nOf = (k) => {
+    if (k === '私信过') return nDm;
+    if (k === '评论过') return all.length - nDm;
+    return asInt(box[k]);
+  };
   for (const [key, label] of INBOX_VIEWS) {
     const one = el('div', 'xhsc-num' + (UI.inboxView === key ? ' on' : ''),
       '<b>' + nOf(key) + '</b><span>' + label + '</span>');
@@ -6508,14 +6522,15 @@ async function renderSent(b) {
   b.appendChild(nums);
 
   syncFoot();
-  if (UI.inboxView !== 'sent') {
+  if (!isSentView(UI.inboxView)) {
     await renderInbox(b, UI.inboxView);
     return;
   }
 
-  const list = rows;
+  const want = UI.inboxView === '私信过' ? '私信' : '评论';
+  const list = all.filter((r) => r.kind === want);
   if (!list.length) {
-    b.appendChild(el('div', 'xhsc-empty', '还没发过私信'));
+    b.appendChild(el('div', 'xhsc-empty', '还没' + want + '过'));
     return;
   }
   for (const s of list) {

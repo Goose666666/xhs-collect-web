@@ -617,34 +617,45 @@
   // 别人找过来的那三类是最该接着聊的：他们对我发的东西有反应，
   // 比评论区里的路人近得多。
   const INBOX_VIEWS = [
-    ['sent', '我发的'],
+    ['私信过', '私信过'],
+    ['评论过', '评论过'],
     ['私信', '私信我的'],
     ['回复', '回复我的'],
     ['点赞', '赞我的'],
   ];
-  let inboxView = 'sent';
+  let inboxView = '私信过';
+
+  // 我发出去的那两档，跟别人找过来的那三档分开。
+  function isSentView(v) {
+    return v === '私信过' || v === '评论过';
+  }
 
   async function renderSent() {
     const p = $('pane-sent');
     p.innerHTML = '<div class="empty">读取中</div>';
-    const got = await ask(inboxView === 'sent' ? 'sent' : 'inbox',
-      { kind: inboxView }, 8000);
-    const box = inboxView === 'sent' ? await ask('inbox', { kind: '' }, 8000) : got;
+    const mine = isSentView(inboxView);
+    const got = await ask(mine ? 'sent' : 'inbox', { kind: inboxView }, 8000);
+    const box = await ask('inbox', { kind: '' }, 8000);
     p.innerHTML = '';
     if (!got) {
       p.innerHTML = '<div class="empty">那一页没应答</div>';
       return;
     }
     const counts = (box && box.counts) || {};
-    const rows = got.rows || [];
+    const all = got.rows || [];
+    const want = inboxView === '私信过' ? '私信' : '评论';
+    const rows = mine
+      ? all.filter(function (r) { return r.kind === want; })
+      : all;
+    const nDm = all.filter(function (r) { return r.kind === '私信'; }).length;
 
     const bar = el('div', 'tabs');
     for (const pair of INBOX_VIEWS) {
+      let n = X.asInt(counts[pair[0]]);
+      if (pair[0] === '私信过') n = mine ? nDm : '';
+      if (pair[0] === '评论过') n = mine ? all.length - nDm : '';
       const b = el('button', pair[0] === inboxView ? 'on' : '',
-        X.esc(pair[1]) + ' ' +
-        (pair[0] === 'sent'
-          ? (inboxView === 'sent' ? rows.length : '')
-          : X.asInt(counts[pair[0]])));
+        X.esc(pair[1]) + ' ' + n);
       b.addEventListener('click', function () {
         inboxView = pair[0];
         renderSent();
@@ -663,7 +674,7 @@
     });
     p.appendChild(go);
 
-    if (inboxView !== 'sent') {
+    if (!mine) {
       renderInbox(p, rows);
       return;
     }
@@ -671,7 +682,7 @@
     p.appendChild(el('div', 'who', pill('全部 ' + rows.length) +
       pill('成功 ' + ok, 'high') + pill('失败 ' + (rows.length - ok))));
     if (!rows.length) {
-      p.appendChild(el('div', 'empty', '还没发过私信'));
+      p.appendChild(el('div', 'empty', '还没' + want + '过'));
       return;
     }
     for (const s of rows) {

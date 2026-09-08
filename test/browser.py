@@ -535,7 +535,7 @@ def main():
         print('私信记录')
         page.click('.xhsc-tab >> nth=3')
         page.wait_for_timeout(600)
-        check('还没发过私信' in page.inner_text('.xhsc-body'), '还没发过就明说')
+        check('还没私信过' in page.inner_text('.xhsc-body'), '还没发过就明说')
 
         # ---------- 发私信 ----------
         #
@@ -730,9 +730,9 @@ def main():
 
         con.click('.tabs button[data-tab=sent]')
         con.wait_for_timeout(1200)
-        check('还没发过私信' in con.inner_text('#pane-sent'), '私信记录')
+        check('还没私信过' in con.inner_text('#pane-sent'), '私信记录')
         views = con.locator('#pane-sent .tabs button').all_text_contents()
-        check(len(views) == 4, '消息页也分四档 ' + str(views))
+        check(len(views) == 5, '消息页也分五档 ' + str(views))
         check('取新消息' in con.inner_text('#pane-sent'), '控制台上也能取新消息')
         # 别人找过来的那三类是这一页真正要看的东西
         work.evaluate("""async () => {
@@ -907,8 +907,8 @@ def main():
         y.click('.xhsc-tab >> nth=3')
         y.wait_for_timeout(600)
         nums = y.locator('.xhsc-num').all_text_contents()
-        check(len(nums) == 4, '四档 ' + str(nums))
-        y.click('.xhsc-num >> nth=2')
+        check(len(nums) == 5, '五档 ' + str(nums))
+        y.click('.xhsc-num >> nth=3')
         y.wait_for_timeout(400)
         seen = y.inner_text('.xhsc-body')
         check('爱吃辣的鱼' in seen, '回复我的那一档里有他')
