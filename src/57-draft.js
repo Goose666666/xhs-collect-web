@@ -56,3 +56,27 @@ function rankTalks(talks, said) {
   }
   return hit.concat(rest);
 }
+
+// 先让模型写，写不出来退回规则。
+//
+// 模型写得比规则活，同一批人不会收到长得一样的话，被举报的机会小。
+async function draftForAsync(opt) {
+  const o = opt || {};
+  const ai = await AI.write(o.said, o.theirSex, o.where);
+  return ai || draftFor(o);
+}
+
+// 给一批人各写一句。四个一起写，不用一个一个排队等。
+//
+// 没填密钥就直接走规则，一次请求都不发。
+async function draftMany(list) {
+  const rows = list || [];
+  if (!AI.key) return rows.map((o) => draftFor(o));
+  const out = new Array(rows.length).fill('');
+  for (let i = 0; i < rows.length; i += 4) {
+    const part = rows.slice(i, i + 4);
+    const got = await Promise.all(part.map((o) => draftForAsync(o)));
+    for (let j = 0; j < got.length; j++) out[i + j] = got[j];
+  }
+  return out;
+}

@@ -85,7 +85,7 @@ async function bridgeHandle(msg) {
     case 'people': {
       const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
       const blocked = await blockedIds();
-      const res = runFunnel(all, { blocked: blocked });
+      const res = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
       return {
         stat: res.stat,
         rows: res.keep.slice(0, 300).map((p) => Object.assign({}, p, {
@@ -145,7 +145,7 @@ async function bridgeHandle(msg) {
     case 'startSend': {
       const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
       const blocked = await blockedIds();
-      const keep = runFunnel(all, { blocked: blocked }).keep;
+      const keep = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai }).keep;
       const kind = asText(msg.kind) === '评论' ? '评论' : '私信';
       // 挑人的规矩跟面板上那两个按钮一样：私信只发评论区的人，
       // 评论按帖子去重。控制台不能比面板宽松，不然从这儿发反倒更容易出事。

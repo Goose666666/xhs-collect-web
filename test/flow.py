@@ -211,7 +211,15 @@ def main():
         text = page.inner_text('.xhsc-body')
         check('广告号' not in text, '广告号被漏斗剔掉')
         check('举手的1' in text, '举手的人留下了')
-        check('楼主1' in text, '帖主也在名单里')
+        check('楼主1' not in text, '一进来只看评论区的人，帖主不混在里面')
+
+        # 帖主收在自己那一档里，点开要看得到
+        page.click('.xhsc-num >> nth=1')
+        page.wait_for_timeout(500)
+        text = page.inner_text('.xhsc-body')
+        check('楼主1' in text, '点帖主那一档能看到帖主')
+        page.click('.xhsc-num >> nth=2')
+        page.wait_for_timeout(500)
 
         print('中途刷新')
         # 状态机最要紧的一条承诺：页面没了进度也不丢。

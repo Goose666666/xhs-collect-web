@@ -82,6 +82,25 @@ EXPORT = {
     },
 }
 
+# 模型那一段单独用一个人。前面发私信那一段已经把 u2 发过了，
+# 试过的人挑不出来第二次。
+MODEL_EXPORT = {
+    "version": 1,
+    "exported_at": "2026-09-02 12:00:00",
+    "tables": {
+        "notes": [], "keywords": [], "settings": [], "tasks": [], "touches": [],
+        "comments": [{
+            "comment_id": "c9", "note_id": "n0001", "parent_id": "", "level": "一级",
+            # 昵称跟着假主页走。发之前脚本要核对页面上是不是这个人，
+            # 名字对不上会当成打开错了人直接放弃。
+            "content": "举手", "nickname": "小明", "user_id": "u9", "likes": 5,
+            "sub_count": 0, "comment_time": "2026-08-01 11:20:00",
+            "ip_location": "成都", "fetched_at": "2026-09-01 10:00:00",
+            "site": "小红书", "trade": "love",
+        }],
+    },
+}
+
 PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>假的小红书</title></head><body>
 <h1>假的小红书</h1>
@@ -657,6 +676,67 @@ def main():
         check(okOrigins['xhs'] is False, '平台自己也不算控制台')
         check(not cerrs2, '控制台没有报错 ' + str(cerrs2))
         ctx.close()
+
+        print('模型筛人和写话术')
+        # 假装是 DeepSeek。判人那一路和写话术那一路请求长得不一样，
+        # 看请求里有没有那句只按序号逐行输出就分得开。
+        def fake_model(route):
+            req = route.request
+            if req.method == 'OPTIONS':
+                route.fulfill(status=204, headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': '*',
+                    'Access-Control-Allow-Methods': '*',
+                })
+                return
+            asked = req.post_data or ''
+            said = '1:高\n2:低' if '只按序号逐行输出' in asked else '我也在成都183有房，认识下吗'
+            route.fulfill(status=200, headers={
+                'Access-Control-Allow-Origin': '*',
+                'Content-Type': 'application/json',
+            }, body=json.dumps({
+                'choices': [{'message': {'content': said}}],
+            }, ensure_ascii=False))
+
+        m = b.new_page(viewport={'width': 390, 'height': 844})
+        merrs = []
+        m.on('pageerror', lambda e: merrs.append(str(e)))
+        m.route('https://api.deepseek.com/**', fake_model)
+        m.add_init_script(script)
+        m.goto(base + '/profile?u=u9')
+        m.wait_for_selector('.xhsc-fab', timeout=5000)
+        m.evaluate("""async () => {
+          await window.__xhs.AI.save('sk-0123456789abcdef0123456789abcdef');
+        }""")
+        check(m.evaluate("() => window.__xhs.AI.key").startswith('sk-'), '密钥存下来了')
+
+        got = m.evaluate("""async () => {
+          return await window.__xhs.AI.judgeMany(['想找个对象', '哈哈哈'], '脱单');
+        }""")
+        check(got == ['高', '低'], '模型按序号回，一条一条对上 ' + str(got))
+
+        wrote = m.evaluate("""async () => {
+          return await window.__xhs.draftMany([{ said: '举手', where: '成都' }]);
+        }""")
+        check(wrote and '183' in wrote[0], '话术是模型写的那句 ' + str(wrote))
+
+        # 挑完人才写话术，发出去的就是模型那句
+        m.evaluate("""async () => {
+          await window.__xhs.importAll(%s);
+        }""" % json.dumps(MODEL_EXPORT, ensure_ascii=False))
+        started = m.evaluate("""async () => {
+          const people = await window.__xhs.listPeople({ trade: 'love' });
+          const one = people.filter((p) => p.user_id === 'u9');
+          return await window.__xhs.startSend(one, '私信');
+        }""")
+        check(started['ok'], '这个人挑得出来 ' + str(started))
+        m.wait_for_function(
+            "() => !window.__xhs.Sender.job || !window.__xhs.Sender.job.running",
+            timeout=60000)
+        mbubble = m.inner_text('.xhs-im-bubble__text')
+        check('183' in mbubble, '发出去的是模型写的那句 ' + mbubble)
+        check(not merrs, '模型这一路没有报错 ' + str(merrs))
+        m.evaluate("async () => { await window.__xhs.AI.save(''); }")
 
         print('安装页')
         i = b.new_page()

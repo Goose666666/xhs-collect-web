@@ -218,6 +218,8 @@ async function listPeople(filter) {
       // 帖主不传帖子正文当上下文。那正是他自己写的话，
       // 拿它去反推等于拿自己推自己，推出来的性别正好是反的。
       sex: guessGender(n.author_name, said, ''),
+      // 模型判过的意向。漏斗先看它，没判过那条再走规则
+      intent_ai: asText(n.intent_ai),
       ts: n.publish_time,
       likes: asInt(n.likes),
       note_id: n.note_id,
@@ -242,6 +244,7 @@ async function listPeople(filter) {
       ip_location: c.ip_location,
       said: asText(c.content),
       sex: guessGender(c.nickname, c.content, noteText),
+      intent_ai: asText(c.intent_ai),
       ts: c.comment_time,
       likes: asInt(c.likes),
       note_id: c.note_id,

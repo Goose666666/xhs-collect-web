@@ -419,10 +419,35 @@ function renderCollect(b) {
     b.appendChild(r);
     return i;
   };
+  // 排序和时间范围一起决定捞到的是哪批人：最新那一档的人还在等回应，
+  // 评论最多那一档人多但可能不在场了；老帖底下的人早就走了。
+  const pickRow = (label, options, now) => {
+    const r = el('div', 'xhsc-row', '<label>' + label + '</label>');
+    const sel = el('select');
+    for (const [v, text] of options) {
+      const o = el('option', '', text);
+      o.value = v;
+      if (String(v) === String(now)) o.selected = true;
+      sel.appendChild(o);
+    }
+    r.appendChild(sel);
+    b.appendChild(r);
+    return sel;
+  };
+  const selSort = pickRow('怎么排', [
+    ['fresh', '最新发布'],
+    ['hot', '评论最多'],
+  ], Limits.sort);
+  const selDays = pickRow('什么时候发的', [
+    [0, '不限时间'],
+    [7, '近一周'],
+    [30, '近一个月'],
+    [180, '近半年'],
+  ], Limits.withinDays);
+
   const nNotes = numRow('采几篇', Limits.crawlSize, kCrawlSizeMin, kCrawlSizeMax);
   const nMin = numRow('多少分钟采完', Limits.crawlMinutes,
     kCrawlMinutesMin, kCrawlMinutesMax);
-  const nCmt = numRow('每篇评论', 60, 0, 500);
 
   const rowOnly = el('div', 'xhsc-row', '<label>只要帖主</label>');
   const chk = el('input');
@@ -435,6 +460,10 @@ function renderCollect(b) {
   const btns = el('div', 'xhsc-btns');
   const start = el('button', 'xhsc-btn', '开始采集');
   start.addEventListener('click', async () => {
+    // 存起来。只放在内存里的话重开一次就回到最新发布，人选了评论最多，
+    // 采回来的还是刚发的那批，底下一条评论都没有。
+    Limits.sort = selSort.value === 'hot' ? 'hot' : 'fresh';
+    Limits.withinDays = Number(selDays.value) || 0;
     const picked = [...UI.picked];
     if (!picked.length) {
       say('先选一个关键词');
@@ -445,7 +474,8 @@ function renderCollect(b) {
     await startCollect({
       keywords: picked,
       maxNotes: Limits.clampSize(nNotes.value),
-      maxComments: asInt(nCmt.value),
+      // 每篇评论固定这一档。那一格调它没什么用，反倒占地方
+      maxComments: 60,
       onlyOwner: chk.checked,
       trade: Trade.now.key,
     });
@@ -718,10 +748,24 @@ function commentRow(one, n) {
         where: c.ip_location,
       });
       UI.person = personOf(c, n, one.sex);
+      aiRewrite(UI.person);
     }
     renderBody();
   });
   return card;
+}
+
+// 规则那句先摆上，再让模型照他那句重写一版。
+//
+// 等模型再显示的话点一条要停两秒，中间空着。人这会儿已经点了别人
+// 或者自己改过字就不换了。
+async function aiRewrite(p) {
+  if (!AI.key || !p) return;
+  const before = UI.draft;
+  const text = await AI.write(p.said, draftOpt(p).theirSex, p.ip_location);
+  if (!text || UI.person !== p || UI.draft !== before) return;
+  UI.draft = text;
+  renderBody();
 }
 
 function clearReply() {
@@ -746,13 +790,9 @@ function replyBox(n) {
     again.addEventListener('click', () => {
       UI.nonce += 1;
       const p = UI.person || {};
-      UI.draft = draftFor({
-        said: p.said,
-        who: asText(p.user_id) || asText(p.nickname),
-        where: p.ip_location,
-        nonce: UI.nonce,
-      });
+      UI.draft = draftFor(Object.assign(draftOpt(p), { nonce: UI.nonce }));
       renderBody();
+      aiRewrite(UI.person);
     });
     who.appendChild(again);
   }
@@ -822,7 +862,7 @@ let _peopleCache = null;
 async function loadPeople() {
   const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
   const blocked = await blockedIds();
-  const res = runFunnel(all, { blocked: blocked });
+  const res = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   _peopleCache = { all: all, keep: res.keep, stat: res.stat, blocked: blocked };
   return _peopleCache;
 }
@@ -830,11 +870,18 @@ async function loadPeople() {
 // 给名单上的一个人写一句话。走的是跟评论区回复同一个出话口子，
 // 两处出的话必须一样，不然同一个人在两个页面上看到两句不同的话。
 function talkFor(p) {
-  return draftFor({
+  return draftFor(draftOpt(p));
+}
+
+// 写一句话要的那几样。昵称也一起看：光凭一句留言常常读不出男女，
+// 报错了条件就是给找女生的男生推荐女生。
+function draftOpt(p) {
+  return {
     said: p.said,
     who: asText(p.user_id) || asText(p.nickname),
     where: p.ip_location,
-  });
+    theirSex: p.sex || guessGender(p.nickname, p.said, p.note_title),
+  };
 }
 
 // 从一批人里挑出真正发得出去的。
@@ -981,7 +1028,9 @@ function personCard(p) {
     const dm = el('button', '', '私信');
     dm.addEventListener('click', (e) => {
       e.stopPropagation();
-      launchSend([p], '私信');
+      // 发的就是这一行上写着的那句。单发按钮点下去要跟眼前看到的一样，
+      // 让模型另写一版的话，发出去的和卡片上的对不上。
+      launchSend([Object.assign({}, p, { text: talk })], '私信');
     });
     mini.appendChild(dm);
   }
@@ -1036,7 +1085,9 @@ function personCard(p) {
 // ---------- 发送 ----------
 
 async function launchSend(people, kind) {
-  const list = people.map((p) => Object.assign({}, p, { text: p.text || talkFor(p) }));
+  // 话留空交给发送那边写。名单上那一行只是预览，真发的时候才让模型写，
+  // 而且是挑完人之后只给发得出去的那几个写。
+  const list = people.map((p) => Object.assign({}, p));
   // 单发之前看看是不是紧挨着上一条。
   //
   // 只拦一件事：两条贴在一起发。真人再快也要看一眼再点，
@@ -1201,6 +1252,21 @@ async function renderSettings(b) {
     '<span class="xhsc-tag">帖子 ' + c.notes + '</span>' +
     '<span class="xhsc-tag">评论 ' + c.comments + '</span>' +
     '<span class="xhsc-tag">' + (hookInstalled() ? '钩子已装' : '钩子没装上') + '</span>'));
+
+  // 让模型筛人和写话术。填了密钥之后，谁算有意向由模型按帖子的关键词判，
+  // 话术也照对方那句话现写。不填就用内置规则，规则在抖音评论区里认不出人。
+  const rowKey = el('div', 'xhsc-row', '<label>模型密钥</label>');
+  const keyInp = el('input');
+  keyInp.type = 'password';
+  keyInp.placeholder = 'DeepSeek 或智谱的密钥';
+  keyInp.value = AI.key;
+  keyInp.addEventListener('change', async () => {
+    await AI.save(keyInp.value);
+    keyInp.value = AI.key;
+    say(AI.key ? '存了' : '清掉了，用规则写');
+  });
+  rowKey.appendChild(keyInp);
+  b.appendChild(rowKey);
 
   // 行业
   const rowTrade = el('div', 'xhsc-row', '<label>行业</label>');

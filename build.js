@@ -50,6 +50,7 @@ const USER_FILES = [
   '55-reply.js',
   '56-poster.js',
   '57-draft.js',
+  '58-ai.js',
   '58-csv.js',
   '60-hook.js',
   '70-engine.js',

@@ -22,6 +22,7 @@ async function boot() {
   try {
     await Trade.load();
     await Limits.load();
+    await AI.load();
     await Limits.loadBatch();
     Runtime.job = (await getJob()) || null;
     Sender.job = (await getSendJob()) || null;
@@ -116,6 +117,8 @@ window.__xhs = {
   listPeople: listPeople,
   sentList: sentList,
   makeReply: makeReply,
+  AI: AI,
+  draftMany: draftMany,
   renderBody: renderBody,
   siteNow: siteNow,
   UI: UI,

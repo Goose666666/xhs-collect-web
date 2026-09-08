@@ -55,7 +55,7 @@ async function saySend(line, extra) {
 async function pickTargets(all, kind) {
   const blocked = await blockedIds();
   // 判的是对方原话。拿要发出去的话术去判，等于问我们自己有没有意向。
-  const r = runFunnel(all, { blocked: blocked });
+  const r = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   const done = await triedIds(kind);
   const left = kind === '私信' ? Limits.batchSize : kCommentPerDay;
 
@@ -108,6 +108,25 @@ function whyNone(picked, total) {
 
 // ---------- 开跑 ----------
 
+// 挑完人再让模型给这几个各写一句。
+//
+// 放在挑人后面：一批名单几百个，绝大多数会被漏斗和额度挡下来，
+// 挑之前写就是给发不出去的人白花钱。没填密钥这一步什么都不做。
+async function modelRewrite(list) {
+  const todo = list.filter((t) => t.auto_text);
+  if (!AI.key || !todo.length) return;
+  say('正在写话术 ' + todo.length + ' 条');
+  const wrote = await draftMany(todo.map((t) => ({
+    said: t.said,
+    who: asText(t.user_id) || asText(t.nickname),
+    where: t.ip_location,
+    theirSex: t.sex || guessGender(t.nickname, t.said, t.note_title),
+  })));
+  todo.forEach((t, i) => {
+    if (wrote[i]) t.text = wrote[i];
+  });
+}
+
 // kind 是私信或者评论。评论一律只填字，最后那一下由人自己按。
 async function startSend(people, kind) {
   if (Runtime.job && Runtime.job.running) {
@@ -117,13 +136,19 @@ async function startSend(people, kind) {
   //
   // 界面上那几个入口都会先把话备好，但这个函数也是排障时直接调的口子，
   // 少了这一步会静静地一个人都挑不出来，谁也看不出是因为没有话可发。
-  const all = (people || []).map((p) => Object.assign({}, p, {
-    text: asText(p.text).trim() || makeReply(p.said, p.user_id, p.ip_location),
-  }));
+  const all = (people || []).map((p) => {
+    const mine = asText(p.text).trim();
+    return Object.assign({}, p, {
+      text: mine || makeReply(p.said, p.user_id, p.ip_location),
+      // 人自己打的那句不许动，剩下的等挑完人再让模型重写
+      auto_text: !mine,
+    });
+  });
   const picked = await pickTargets(all, kind);
   if (!picked.list.length) {
     return { ok: false, why: whyNone(picked, all.length) };
   }
+  await modelRewrite(picked.list);
   Sender.stopFlag = false;
   Sender.pauseFlag = false;
 

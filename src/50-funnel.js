@@ -124,9 +124,14 @@ function saidStop(text) {
 }
 
 // 一批人过一遍漏斗，返回能联系的那些和一份统计。
+// opt.intentOf 给了就照模型判的来，没判过那条再走规则。
+//
+// 靠关键词的规则在抖音评论区里认不出人，会把看热闹的和聊剧情的一律
+// 判成没意向，一个都挑不出来。
 function runFunnel(all, opt) {
   const o = opt || {};
   const blocked = o.blocked || new Set();
+  const aiOf = o.intentOf || (() => '');
   const keep = [];
   const stat = { all: all.length, risky: 0, low: 0, mid: 0, high: 0, blocked: 0 };
 
@@ -135,7 +140,14 @@ function runFunnel(all, opt) {
       stat.blocked += 1;
       continue;
     }
-    const r = judgePerson(it.nickname, it.said);
+    const ai = asText(aiOf(it));
+    const r = ai === '高'
+      ? INTENT_HIGH
+      : ai === '中'
+        ? INTENT_MID
+        : ai === '低'
+          ? INTENT_LOW
+          : judgePerson(it.nickname, it.said);
     it.intent = r;
     if (r === INTENT_RISKY) stat.risky += 1;
     else if (r === INTENT_LOW) stat.low += 1;

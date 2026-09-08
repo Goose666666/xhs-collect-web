@@ -450,9 +450,45 @@ function stableUrl(url, width) {
 }
 
 // 搜索结果页的地址。关键词必须整体转义，中文和空格直接拼进去会拼出一个打不开的地址。
-function searchUrl(keyword) {
+//
+// sort 是 fresh 或者 hot。地址里那个参数不一定管用，页面上的筛选标签才是准的，
+// 所以到了页面还要再点一次，这里只是先给个偏向。
+function searchUrl(keyword, sort) {
+  const tail = sort === 'hot' ? '&sort=popularity_descending' : '&sort=time_descending';
   return 'https://www.xiaohongshu.com/search_result?keyword=' +
-    encodeURIComponent(asText(keyword).trim()) + '&source=web_explore_feed';
+    encodeURIComponent(asText(keyword).trim()) + '&source=web_explore_feed' + tail;
+}
+
+// 这篇帖子是不是太老了。withinDays 是零就是不限。
+//
+// 排序是平台说了算的，说是最新也可能混进老帖子。这一道是自己把关：
+// 太老的帖子底下那些人早就不在场了，采回来也是白采。
+function tooOld(publishTime, withinDays, now) {
+  if (!withinDays || withinDays <= 0) return false;
+  const s = asText(publishTime).trim();
+  if (!s) return false;
+  const today = now || new Date();
+  const days = (d) => Math.floor((today - d) / 86400000);
+
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return days(new Date(+m[1], +m[2] - 1, +m[3])) > withinDays;
+
+  // 只有月日的按今年算，跨年的算去年
+  m = s.match(/^(\d{1,2})[-/月](\d{1,2})/);
+  if (m) {
+    const y = today.getFullYear();
+    let d = new Date(y, +m[1] - 1, +m[2]);
+    if (d > today) d = new Date(y - 1, +m[1] - 1, +m[2]);
+    return days(d) > withinDays;
+  }
+
+  m = s.match(/^(\d+)\s*天前/);
+  if (m) return +m[1] > withinDays;
+  m = s.match(/^(\d+)\s*个?月前/);
+  if (m) return +m[1] * 30 > withinDays;
+  m = s.match(/^(\d+)\s*年前/);
+  if (m) return +m[1] * 365 > withinDays;
+  return false;
 }
 
 // ---------- 评论 ----------
@@ -561,9 +597,13 @@ function videoUrl(id) {
 }
 
 // 抖音的搜索页，type=general 是综合，视频和用户都在里面。
-function douyinSearchUrl(keyword) {
+// sort_type：0 综合，1 最多点赞，2 最新发布。评论最多那一档抖音没有，
+// 用最多点赞顶上，热帖底下的人本来就多。
+function douyinSearchUrl(keyword, sort) {
+  const t = sort === 'hot' ? '1' : '2';
   return 'https://www.douyin.com/search/' +
-    encodeURIComponent(asText(keyword).trim()) + '?type=general';
+    encodeURIComponent(asText(keyword).trim()) +
+    '?type=general&publish_time=0&sort_type=' + t;
 }
 
 // 主页地址只认 sec_uid，那是一串带字母的长码。
@@ -832,8 +872,10 @@ function bucketHere(url) {
 }
 
 // 按当前平台拼搜索页地址。
-function searchUrlHere(keyword) {
-  return onDouyin() ? douyinSearchUrl(keyword) : searchUrl(keyword);
+function searchUrlHere(keyword, sort) {
+  return onDouyin()
+    ? douyinSearchUrl(keyword, sort)
+    : searchUrl(keyword, sort);
 }
 
 // 按当前平台拼作品地址。
@@ -1089,6 +1131,8 @@ async function listPeople(filter) {
       // 帖主不传帖子正文当上下文。那正是他自己写的话，
       // 拿它去反推等于拿自己推自己，推出来的性别正好是反的。
       sex: guessGender(n.author_name, said, ''),
+      // 模型判过的意向。漏斗先看它，没判过那条再走规则
+      intent_ai: asText(n.intent_ai),
       ts: n.publish_time,
       likes: asInt(n.likes),
       note_id: n.note_id,
@@ -1113,6 +1157,7 @@ async function listPeople(filter) {
       ip_location: c.ip_location,
       said: asText(c.content),
       sex: guessGender(c.nickname, c.content, noteText),
+      intent_ai: asText(c.intent_ai),
       ts: c.comment_time,
       likes: asInt(c.likes),
       note_id: c.note_id,
@@ -1555,6 +1600,12 @@ const Limits = {
   crawlSize: kCrawlSizeDefault,
   crawlMinutes: kCrawlMinutesDefault,
 
+  // 搜出来的帖子按什么排：fresh 最新发布，hot 评论最多。
+  sort: 'fresh',
+
+  // 只要这么多天内发的。零是不限。
+  withinDays: 180,
+
   clampSize(v) {
     const n = asInt(v);
     return n < kCrawlSizeMin ? kCrawlSizeMin : (n > kCrawlSizeMax ? kCrawlSizeMax : n);
@@ -1578,6 +1629,12 @@ const Limits = {
   },
 
   async load() {
+    // 排序和时间范围也存起来。只放在内存里的话，重开一次就回到最新发布，
+    // 人选了评论最多，采回来的还是刚发的那批，底下一条评论都没有。
+    Limits.sort = asText(await getSetting('crawl_sort', 'fresh')) === 'hot'
+      ? 'hot'
+      : 'fresh';
+    Limits.withinDays = Number(await getSetting('crawl_days', 180)) || 0;
     Limits.crawlSize = Limits.clampSize(await getSetting('crawl_size', kCrawlSizeDefault));
     Limits.crawlMinutes = Limits.clampMinutes(
       await getSetting('crawl_minutes', kCrawlMinutesDefault));
@@ -1586,6 +1643,8 @@ const Limits = {
   async save(size, minutes) {
     Limits.crawlSize = Limits.clampSize(size);
     Limits.crawlMinutes = Limits.clampMinutes(minutes);
+    await setSetting('crawl_sort', Limits.sort);
+    await setSetting('crawl_days', Limits.withinDays);
     await setSetting('crawl_size', Limits.crawlSize);
     await setSetting('crawl_minutes', Limits.crawlMinutes);
   },
@@ -1855,9 +1914,14 @@ function saidStop(text) {
 }
 
 // 一批人过一遍漏斗，返回能联系的那些和一份统计。
+// opt.intentOf 给了就照模型判的来，没判过那条再走规则。
+//
+// 靠关键词的规则在抖音评论区里认不出人，会把看热闹的和聊剧情的一律
+// 判成没意向，一个都挑不出来。
 function runFunnel(all, opt) {
   const o = opt || {};
   const blocked = o.blocked || new Set();
+  const aiOf = o.intentOf || (() => '');
   const keep = [];
   const stat = { all: all.length, risky: 0, low: 0, mid: 0, high: 0, blocked: 0 };
 
@@ -1866,7 +1930,14 @@ function runFunnel(all, opt) {
       stat.blocked += 1;
       continue;
     }
-    const r = judgePerson(it.nickname, it.said);
+    const ai = asText(aiOf(it));
+    const r = ai === '高'
+      ? INTENT_HIGH
+      : ai === '中'
+        ? INTENT_MID
+        : ai === '低'
+          ? INTENT_LOW
+          : judgePerson(it.nickname, it.said);
     it.intent = r;
     if (r === INTENT_RISKY) stat.risky += 1;
     else if (r === INTENT_LOW) stat.low += 1;
@@ -2873,6 +2944,206 @@ function rankTalks(talks, said) {
   return hit.concat(rest);
 }
 
+// 先让模型写，写不出来退回规则。
+//
+// 模型写得比规则活，同一批人不会收到长得一样的话，被举报的机会小。
+async function draftForAsync(opt) {
+  const o = opt || {};
+  const ai = await AI.write(o.said, o.theirSex, o.where);
+  return ai || draftFor(o);
+}
+
+// 给一批人各写一句。四个一起写，不用一个一个排队等。
+//
+// 没填密钥就直接走规则，一次请求都不发。
+async function draftMany(list) {
+  const rows = list || [];
+  if (!AI.key) return rows.map((o) => draftFor(o));
+  const out = new Array(rows.length).fill('');
+  for (let i = 0; i < rows.length; i += 4) {
+    const part = rows.slice(i, i + 4);
+    const got = await Promise.all(part.map((o) => draftForAsync(o)));
+    for (let j = 0; j < got.length; j++) out[i + j] = got[j];
+  }
+  return out;
+}
+
+
+// ===== 58-ai.js =====
+// 让模型筛人和写话术。跟安卓版是同一套口径。
+//
+// 靠关键词的规则在抖音评论区里认不出人，会把看热闹的和聊剧情的
+// 一律判成没意向，私信一个都挑不出来。模型按帖子的关键词去判，
+// 跟主题不沾边的一律算低。
+//
+// 密钥在设置里填，没填或者请求失败就退回规则那套，界面上不用等。
+
+const AI = {
+  key: '',
+
+  async load() {
+    AI.key = asText(await getSetting('ai_key', ''));
+  },
+
+  async save(raw) {
+    AI.key = AI.pick(raw);
+    await setSetting('ai_key', AI.key);
+  },
+
+  // 从框里那串字里挑出密钥本身。
+  //
+  // 手机上粘贴和输入法都会带进多余的字：前面留着旧的一截，后面跟着回车。
+  // 只认最后一段长得像密钥的，DeepSeek 是 sk- 加三十二位十六进制，
+  // 智谱是两段字符中间一个点。
+  pick(raw) {
+    const s = asText(raw);
+    const ds = s.match(/sk-[0-9a-fA-F]{32}/g);
+    if (ds && ds.length) return ds[ds.length - 1];
+    const glm = s.match(/[0-9a-fA-F]{32}\.[0-9A-Za-z]{16,}/g);
+    if (glm && glm.length) return glm[glm.length - 1];
+    return s.trim();
+  },
+
+  // 密钥长什么样就走哪家。DeepSeek 的以 sk- 开头，智谱的中间带一个点。
+  endpoint() {
+    if (AI.key.indexOf('.') >= 0 && AI.key.indexOf('sk-') !== 0) {
+      return {
+        url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+        model: 'glm-4-flash',
+      };
+    }
+    return {
+      url: 'https://api.deepseek.com/chat/completions',
+      model: 'deepseek-chat',
+    };
+  },
+
+  // 问模型一句，拿回整段文字。出错、超时、没密钥都给空串。
+  async ask(content, maxTokens, temp) {
+    if (!AI.key) return '';
+    const at = AI.endpoint();
+    try {
+      const r = await fetch(at.url, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + AI.key,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: at.model,
+          temperature: temp === undefined ? 0.9 : temp,
+          max_tokens: maxTokens || 120,
+          messages: [{ role: 'user', content }],
+        }),
+      });
+      if (!r.ok) return '';
+      const j = await r.json();
+      const list = j && j.choices;
+      if (!list || !list.length) return '';
+      return asText(list[0].message && list[0].message.content).trim();
+    } catch (e) {
+      return '';
+    }
+  },
+
+  // 判一批人有没有找对象的意向。每一项回高、中、低，判不了的回空串。
+  //
+  // 一次送二十条，让模型按序号回，省请求也省钱。
+  judgePrompt(lines, keyword) {
+    const topic = keyword ? '「' + keyword + '」' : '找对象、相亲';
+    const head = [
+      '下面是按' + topic + '这个主题搜到的帖子评论区里的留言，一行一条，前面是序号。',
+      '判断每一条留言的人本人是不是真的在' + topic + '这件事上有需求：',
+      '高：明确在找对象、征婚、报了自己条件或择偶要求，跟' + topic + '直接相关；',
+      '中：提到自己单身、想脱单、问怎么认识人这类，但没明说要什么；',
+      '低：看热闹、评论别人、开玩笑、聊剧情、广告、跟' + topic + '无关。',
+      '宁可判低，不确定的一律判低。',
+      '只按序号逐行输出，格式是 序号:高 或 序号:中 或 序号:低，不要别的字。',
+      '',
+    ];
+    const body = lines.map((s, i) =>
+      (i + 1) + ':' + asText(s).replace(/\n/g, ' ').trim());
+    return head.concat(body).join('\n');
+  },
+
+  async judgeMany(lines, keyword) {
+    const out = lines.map(() => '');
+    if (!AI.key || !lines.length) return out;
+    for (let i = 0; i < lines.length; i += 20) {
+      const part = lines.slice(i, i + 20);
+      const text = await AI.ask(AI.judgePrompt(part, keyword), 400, 0.1);
+      const re = /(\d+)\s*[:：]\s*(高|中|低)/g;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const k = Number(m[1]) - 1;
+        if (k >= 0 && k < part.length) out[i + k] = m[2];
+      }
+    }
+    return out;
+  },
+
+  // 给模型的话。规则写死在这儿，跟 55-reply.js 那套口径一致。
+  draftPrompt(said, theirSex, where) {
+    const me = theirSex === '女' ? '男' : (theirSex === '男' ? '女' : '');
+    const sexLine = me
+      ? '对方是' + theirSex + '的，你写成一个' + me + '的。'
+      : '先从这句话判断对方是男是女，你写成异性。';
+    const place = where ? '（对方在' + where + '，就说自己也在那一带）' : '';
+    return '你替一个单身的人在相亲帖子的评论区回话。' + sexLine +
+      '用第一人称，像真人随手打的一两句话，不超过四十个字，' +
+      '口语，标点少，不要排比，不要每样条件都报，报两三样就够。' +
+      '直接接对方那句话里的意思往下说，不要用看你提到、看到你说这种套话开头。' +
+      '条件里挑对方在意的报：年龄或出生年份、身高、做什么工作、在哪座城市' +
+      place + '、有房有车。男的身高只能在180到188之间挑一个数，' +
+      '女的在160到168之间；条件要合理，别夸张，别像在填表，也别像客服。' +
+      '最后顺口问一句能不能认识。' +
+      '不要出现微信、电话、联系方式、加我这些词，不要表情符号，不要引号，' +
+      '只输出那句话本身。\n\n对方说：' + asText(said);
+  },
+
+  // 模型偶尔会带引号或者多说一句，只留第一段话。
+  clean(s) {
+    let t = asText(s).replace(/^["“「\s]+|["”」\s]+$/g, '');
+    const nl = t.indexOf('\n');
+    if (nl > 0) t = t.slice(0, nl).trim();
+    return t.length > 80 ? t.slice(0, 80) : t;
+  },
+
+  // 采到一篇就判一篇：帖子本身加底下的评论，结果写回库里那几行。
+  //
+  // 判不出来的留空，人页照旧用规则那套兜底。判这一步失败不影响采集。
+  async judgeAndStore(comments, note) {
+    if (!AI.key) return;
+    try {
+      const lines = [asText(note.title) + ' ' + asText(note.content)]
+        .concat(comments.map((c) => asText(c.content)));
+      const got = await AI.judgeMany(lines, asText(note.keyword));
+      const rows = [];
+      for (let i = 0; i < comments.length; i++) {
+        const level = got[i + 1];
+        if (!level) continue;
+        rows.push(Object.assign({}, comments[i], { intent_ai: level }));
+      }
+      if (rows.length) await putMany('comments', rows);
+      if (got[0]) {
+        const one = await getOne('notes', note.note_id);
+        if (one) {
+          await putMany('notes',
+            [Object.assign({}, one, { intent_ai: got[0] })]);
+        }
+      }
+    } catch (e) {
+      // 判不了就算了，采集本身不受影响
+    }
+  },
+
+  // 写一句。没密钥、超时、出错都返回空串，调用方自己退回规则。
+  async write(said, theirSex, where) {
+    if (!AI.key || !asText(said).trim()) return '';
+    return AI.clean(await AI.ask(AI.draftPrompt(said, theirSex, where)));
+  },
+};
+
 
 // ===== 58-csv.js =====
 // 导出成 CSV，拿到电脑上用表格软件打开。
@@ -3323,7 +3594,7 @@ function wantUrl(job) {
     if (!h) return '';
     return noteUrlHere(h.note_id, h.xsec_token);
   }
-  return searchUrlHere(currentWord(job));
+  return searchUrlHere(currentWord(job), Limits.sort);
 }
 
 // 现在这个页面是不是该干活的那个。
@@ -3516,6 +3787,13 @@ async function stepNote(job) {
     await nextWord();
     return;
   }
+  // 太老的帖子底下那些人早就不在场了，采回来也是白采。
+  // 排序是平台说了算的，说是最新也可能混进老帖子，这一道是自己把关。
+  if (tooOld(hit.publish_time, Limits.withinDays)) {
+    await say('这篇是 ' + hit.publish_time + ' 发的，太老，跳过');
+    await nextNote(0, 0);
+    return;
+  }
   await say('[' + word + ' ' + (job.ni + 1) + '/' + job.hits.length + '] 打开帖子');
   // 同样不能清桶，评论接口也是页面一加载就发的
   await readAWhile();
@@ -3572,6 +3850,9 @@ async function stepNote(job) {
   // 重采一次把 token 覆盖没了，人就被判到另一个平台去了。
   const freshNotes = await saveNotes([note], word, siteNow(), job.trade);
   const freshComments = await saveComments(comments, siteNow(), job.trade);
+  // 让模型判这一篇和底下这些人有没有意向。不等它，判完自己进库。
+  // 规则那套在抖音评论区里认不出人，会把所有人判成没意向。
+  AI.judgeAndStore(comments, note);
   await nextNote(freshNotes, freshComments, head(note.title || note.content, 18));
 }
 
@@ -3846,7 +4127,7 @@ async function saySend(line, extra) {
 async function pickTargets(all, kind) {
   const blocked = await blockedIds();
   // 判的是对方原话。拿要发出去的话术去判，等于问我们自己有没有意向。
-  const r = runFunnel(all, { blocked: blocked });
+  const r = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   const done = await triedIds(kind);
   const left = kind === '私信' ? Limits.batchSize : kCommentPerDay;
 
@@ -3899,6 +4180,25 @@ function whyNone(picked, total) {
 
 // ---------- 开跑 ----------
 
+// 挑完人再让模型给这几个各写一句。
+//
+// 放在挑人后面：一批名单几百个，绝大多数会被漏斗和额度挡下来，
+// 挑之前写就是给发不出去的人白花钱。没填密钥这一步什么都不做。
+async function modelRewrite(list) {
+  const todo = list.filter((t) => t.auto_text);
+  if (!AI.key || !todo.length) return;
+  say('正在写话术 ' + todo.length + ' 条');
+  const wrote = await draftMany(todo.map((t) => ({
+    said: t.said,
+    who: asText(t.user_id) || asText(t.nickname),
+    where: t.ip_location,
+    theirSex: t.sex || guessGender(t.nickname, t.said, t.note_title),
+  })));
+  todo.forEach((t, i) => {
+    if (wrote[i]) t.text = wrote[i];
+  });
+}
+
 // kind 是私信或者评论。评论一律只填字，最后那一下由人自己按。
 async function startSend(people, kind) {
   if (Runtime.job && Runtime.job.running) {
@@ -3908,13 +4208,19 @@ async function startSend(people, kind) {
   //
   // 界面上那几个入口都会先把话备好，但这个函数也是排障时直接调的口子，
   // 少了这一步会静静地一个人都挑不出来，谁也看不出是因为没有话可发。
-  const all = (people || []).map((p) => Object.assign({}, p, {
-    text: asText(p.text).trim() || makeReply(p.said, p.user_id, p.ip_location),
-  }));
+  const all = (people || []).map((p) => {
+    const mine = asText(p.text).trim();
+    return Object.assign({}, p, {
+      text: mine || makeReply(p.said, p.user_id, p.ip_location),
+      // 人自己打的那句不许动，剩下的等挑完人再让模型重写
+      auto_text: !mine,
+    });
+  });
   const picked = await pickTargets(all, kind);
   if (!picked.list.length) {
     return { ok: false, why: whyNone(picked, all.length) };
   }
+  await modelRewrite(picked.list);
   Sender.stopFlag = false;
   Sender.pauseFlag = false;
 
@@ -4735,10 +5041,35 @@ function renderCollect(b) {
     b.appendChild(r);
     return i;
   };
+  // 排序和时间范围一起决定捞到的是哪批人：最新那一档的人还在等回应，
+  // 评论最多那一档人多但可能不在场了；老帖底下的人早就走了。
+  const pickRow = (label, options, now) => {
+    const r = el('div', 'xhsc-row', '<label>' + label + '</label>');
+    const sel = el('select');
+    for (const [v, text] of options) {
+      const o = el('option', '', text);
+      o.value = v;
+      if (String(v) === String(now)) o.selected = true;
+      sel.appendChild(o);
+    }
+    r.appendChild(sel);
+    b.appendChild(r);
+    return sel;
+  };
+  const selSort = pickRow('怎么排', [
+    ['fresh', '最新发布'],
+    ['hot', '评论最多'],
+  ], Limits.sort);
+  const selDays = pickRow('什么时候发的', [
+    [0, '不限时间'],
+    [7, '近一周'],
+    [30, '近一个月'],
+    [180, '近半年'],
+  ], Limits.withinDays);
+
   const nNotes = numRow('采几篇', Limits.crawlSize, kCrawlSizeMin, kCrawlSizeMax);
   const nMin = numRow('多少分钟采完', Limits.crawlMinutes,
     kCrawlMinutesMin, kCrawlMinutesMax);
-  const nCmt = numRow('每篇评论', 60, 0, 500);
 
   const rowOnly = el('div', 'xhsc-row', '<label>只要帖主</label>');
   const chk = el('input');
@@ -4751,6 +5082,10 @@ function renderCollect(b) {
   const btns = el('div', 'xhsc-btns');
   const start = el('button', 'xhsc-btn', '开始采集');
   start.addEventListener('click', async () => {
+    // 存起来。只放在内存里的话重开一次就回到最新发布，人选了评论最多，
+    // 采回来的还是刚发的那批，底下一条评论都没有。
+    Limits.sort = selSort.value === 'hot' ? 'hot' : 'fresh';
+    Limits.withinDays = Number(selDays.value) || 0;
     const picked = [...UI.picked];
     if (!picked.length) {
       say('先选一个关键词');
@@ -4761,7 +5096,8 @@ function renderCollect(b) {
     await startCollect({
       keywords: picked,
       maxNotes: Limits.clampSize(nNotes.value),
-      maxComments: asInt(nCmt.value),
+      // 每篇评论固定这一档。那一格调它没什么用，反倒占地方
+      maxComments: 60,
       onlyOwner: chk.checked,
       trade: Trade.now.key,
     });
@@ -5034,10 +5370,24 @@ function commentRow(one, n) {
         where: c.ip_location,
       });
       UI.person = personOf(c, n, one.sex);
+      aiRewrite(UI.person);
     }
     renderBody();
   });
   return card;
+}
+
+// 规则那句先摆上，再让模型照他那句重写一版。
+//
+// 等模型再显示的话点一条要停两秒，中间空着。人这会儿已经点了别人
+// 或者自己改过字就不换了。
+async function aiRewrite(p) {
+  if (!AI.key || !p) return;
+  const before = UI.draft;
+  const text = await AI.write(p.said, draftOpt(p).theirSex, p.ip_location);
+  if (!text || UI.person !== p || UI.draft !== before) return;
+  UI.draft = text;
+  renderBody();
 }
 
 function clearReply() {
@@ -5062,13 +5412,9 @@ function replyBox(n) {
     again.addEventListener('click', () => {
       UI.nonce += 1;
       const p = UI.person || {};
-      UI.draft = draftFor({
-        said: p.said,
-        who: asText(p.user_id) || asText(p.nickname),
-        where: p.ip_location,
-        nonce: UI.nonce,
-      });
+      UI.draft = draftFor(Object.assign(draftOpt(p), { nonce: UI.nonce }));
       renderBody();
+      aiRewrite(UI.person);
     });
     who.appendChild(again);
   }
@@ -5138,7 +5484,7 @@ let _peopleCache = null;
 async function loadPeople() {
   const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
   const blocked = await blockedIds();
-  const res = runFunnel(all, { blocked: blocked });
+  const res = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
   _peopleCache = { all: all, keep: res.keep, stat: res.stat, blocked: blocked };
   return _peopleCache;
 }
@@ -5146,11 +5492,18 @@ async function loadPeople() {
 // 给名单上的一个人写一句话。走的是跟评论区回复同一个出话口子，
 // 两处出的话必须一样，不然同一个人在两个页面上看到两句不同的话。
 function talkFor(p) {
-  return draftFor({
+  return draftFor(draftOpt(p));
+}
+
+// 写一句话要的那几样。昵称也一起看：光凭一句留言常常读不出男女，
+// 报错了条件就是给找女生的男生推荐女生。
+function draftOpt(p) {
+  return {
     said: p.said,
     who: asText(p.user_id) || asText(p.nickname),
     where: p.ip_location,
-  });
+    theirSex: p.sex || guessGender(p.nickname, p.said, p.note_title),
+  };
 }
 
 // 从一批人里挑出真正发得出去的。
@@ -5297,7 +5650,9 @@ function personCard(p) {
     const dm = el('button', '', '私信');
     dm.addEventListener('click', (e) => {
       e.stopPropagation();
-      launchSend([p], '私信');
+      // 发的就是这一行上写着的那句。单发按钮点下去要跟眼前看到的一样，
+      // 让模型另写一版的话，发出去的和卡片上的对不上。
+      launchSend([Object.assign({}, p, { text: talk })], '私信');
     });
     mini.appendChild(dm);
   }
@@ -5352,7 +5707,9 @@ function personCard(p) {
 // ---------- 发送 ----------
 
 async function launchSend(people, kind) {
-  const list = people.map((p) => Object.assign({}, p, { text: p.text || talkFor(p) }));
+  // 话留空交给发送那边写。名单上那一行只是预览，真发的时候才让模型写，
+  // 而且是挑完人之后只给发得出去的那几个写。
+  const list = people.map((p) => Object.assign({}, p));
   // 单发之前看看是不是紧挨着上一条。
   //
   // 只拦一件事：两条贴在一起发。真人再快也要看一眼再点，
@@ -5517,6 +5874,21 @@ async function renderSettings(b) {
     '<span class="xhsc-tag">帖子 ' + c.notes + '</span>' +
     '<span class="xhsc-tag">评论 ' + c.comments + '</span>' +
     '<span class="xhsc-tag">' + (hookInstalled() ? '钩子已装' : '钩子没装上') + '</span>'));
+
+  // 让模型筛人和写话术。填了密钥之后，谁算有意向由模型按帖子的关键词判，
+  // 话术也照对方那句话现写。不填就用内置规则，规则在抖音评论区里认不出人。
+  const rowKey = el('div', 'xhsc-row', '<label>模型密钥</label>');
+  const keyInp = el('input');
+  keyInp.type = 'password';
+  keyInp.placeholder = 'DeepSeek 或智谱的密钥';
+  keyInp.value = AI.key;
+  keyInp.addEventListener('change', async () => {
+    await AI.save(keyInp.value);
+    keyInp.value = AI.key;
+    say(AI.key ? '存了' : '清掉了，用规则写');
+  });
+  rowKey.appendChild(keyInp);
+  b.appendChild(rowKey);
 
   // 行业
   const rowTrade = el('div', 'xhsc-row', '<label>行业</label>');
@@ -5754,7 +6126,7 @@ async function bridgeHandle(msg) {
     case 'people': {
       const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
       const blocked = await blockedIds();
-      const res = runFunnel(all, { blocked: blocked });
+      const res = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai });
       return {
         stat: res.stat,
         rows: res.keep.slice(0, 300).map((p) => Object.assign({}, p, {
@@ -5814,7 +6186,7 @@ async function bridgeHandle(msg) {
     case 'startSend': {
       const all = await listPeople({ trade: Trade.now.key, order: 'likes' });
       const blocked = await blockedIds();
-      const keep = runFunnel(all, { blocked: blocked }).keep;
+      const keep = runFunnel(all, { blocked: blocked, intentOf: (x) => x.intent_ai }).keep;
       const kind = asText(msg.kind) === '评论' ? '评论' : '私信';
       // 挑人的规矩跟面板上那两个按钮一样：私信只发评论区的人，
       // 评论按帖子去重。控制台不能比面板宽松，不然从这儿发反倒更容易出事。
@@ -5931,6 +6303,7 @@ async function boot() {
   try {
     await Trade.load();
     await Limits.load();
+    await AI.load();
     await Limits.loadBatch();
     Runtime.job = (await getJob()) || null;
     Sender.job = (await getSendJob()) || null;
@@ -6025,6 +6398,8 @@ window.__xhs = {
   listPeople: listPeople,
   sentList: sentList,
   makeReply: makeReply,
+  AI: AI,
+  draftMany: draftMany,
   renderBody: renderBody,
   siteNow: siteNow,
   UI: UI,

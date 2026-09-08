@@ -304,9 +304,45 @@ function stableUrl(url, width) {
 }
 
 // 搜索结果页的地址。关键词必须整体转义，中文和空格直接拼进去会拼出一个打不开的地址。
-function searchUrl(keyword) {
+//
+// sort 是 fresh 或者 hot。地址里那个参数不一定管用，页面上的筛选标签才是准的，
+// 所以到了页面还要再点一次，这里只是先给个偏向。
+function searchUrl(keyword, sort) {
+  const tail = sort === 'hot' ? '&sort=popularity_descending' : '&sort=time_descending';
   return 'https://www.xiaohongshu.com/search_result?keyword=' +
-    encodeURIComponent(asText(keyword).trim()) + '&source=web_explore_feed';
+    encodeURIComponent(asText(keyword).trim()) + '&source=web_explore_feed' + tail;
+}
+
+// 这篇帖子是不是太老了。withinDays 是零就是不限。
+//
+// 排序是平台说了算的，说是最新也可能混进老帖子。这一道是自己把关：
+// 太老的帖子底下那些人早就不在场了，采回来也是白采。
+function tooOld(publishTime, withinDays, now) {
+  if (!withinDays || withinDays <= 0) return false;
+  const s = asText(publishTime).trim();
+  if (!s) return false;
+  const today = now || new Date();
+  const days = (d) => Math.floor((today - d) / 86400000);
+
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return days(new Date(+m[1], +m[2] - 1, +m[3])) > withinDays;
+
+  // 只有月日的按今年算，跨年的算去年
+  m = s.match(/^(\d{1,2})[-/月](\d{1,2})/);
+  if (m) {
+    const y = today.getFullYear();
+    let d = new Date(y, +m[1] - 1, +m[2]);
+    if (d > today) d = new Date(y - 1, +m[1] - 1, +m[2]);
+    return days(d) > withinDays;
+  }
+
+  m = s.match(/^(\d+)\s*天前/);
+  if (m) return +m[1] > withinDays;
+  m = s.match(/^(\d+)\s*个?月前/);
+  if (m) return +m[1] * 30 > withinDays;
+  m = s.match(/^(\d+)\s*年前/);
+  if (m) return +m[1] * 365 > withinDays;
+  return false;
 }
 
 // ---------- 评论 ----------

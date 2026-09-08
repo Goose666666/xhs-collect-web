@@ -25,6 +25,12 @@ const Limits = {
   crawlSize: kCrawlSizeDefault,
   crawlMinutes: kCrawlMinutesDefault,
 
+  // 搜出来的帖子按什么排：fresh 最新发布，hot 评论最多。
+  sort: 'fresh',
+
+  // 只要这么多天内发的。零是不限。
+  withinDays: 180,
+
   clampSize(v) {
     const n = asInt(v);
     return n < kCrawlSizeMin ? kCrawlSizeMin : (n > kCrawlSizeMax ? kCrawlSizeMax : n);
@@ -48,6 +54,12 @@ const Limits = {
   },
 
   async load() {
+    // 排序和时间范围也存起来。只放在内存里的话，重开一次就回到最新发布，
+    // 人选了评论最多，采回来的还是刚发的那批，底下一条评论都没有。
+    Limits.sort = asText(await getSetting('crawl_sort', 'fresh')) === 'hot'
+      ? 'hot'
+      : 'fresh';
+    Limits.withinDays = Number(await getSetting('crawl_days', 180)) || 0;
     Limits.crawlSize = Limits.clampSize(await getSetting('crawl_size', kCrawlSizeDefault));
     Limits.crawlMinutes = Limits.clampMinutes(
       await getSetting('crawl_minutes', kCrawlMinutesDefault));
@@ -56,6 +68,8 @@ const Limits = {
   async save(size, minutes) {
     Limits.crawlSize = Limits.clampSize(size);
     Limits.crawlMinutes = Limits.clampMinutes(minutes);
+    await setSetting('crawl_sort', Limits.sort);
+    await setSetting('crawl_days', Limits.withinDays);
     await setSetting('crawl_size', Limits.crawlSize);
     await setSetting('crawl_minutes', Limits.crawlMinutes);
   },

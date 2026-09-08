@@ -104,7 +104,7 @@ function wantUrl(job) {
     if (!h) return '';
     return noteUrlHere(h.note_id, h.xsec_token);
   }
-  return searchUrlHere(currentWord(job));
+  return searchUrlHere(currentWord(job), Limits.sort);
 }
 
 // 现在这个页面是不是该干活的那个。
@@ -297,6 +297,13 @@ async function stepNote(job) {
     await nextWord();
     return;
   }
+  // 太老的帖子底下那些人早就不在场了，采回来也是白采。
+  // 排序是平台说了算的，说是最新也可能混进老帖子，这一道是自己把关。
+  if (tooOld(hit.publish_time, Limits.withinDays)) {
+    await say('这篇是 ' + hit.publish_time + ' 发的，太老，跳过');
+    await nextNote(0, 0);
+    return;
+  }
   await say('[' + word + ' ' + (job.ni + 1) + '/' + job.hits.length + '] 打开帖子');
   // 同样不能清桶，评论接口也是页面一加载就发的
   await readAWhile();
@@ -353,6 +360,9 @@ async function stepNote(job) {
   // 重采一次把 token 覆盖没了，人就被判到另一个平台去了。
   const freshNotes = await saveNotes([note], word, siteNow(), job.trade);
   const freshComments = await saveComments(comments, siteNow(), job.trade);
+  // 让模型判这一篇和底下这些人有没有意向。不等它，判完自己进库。
+  // 规则那套在抖音评论区里认不出人，会把所有人判成没意向。
+  AI.judgeAndStore(comments, note);
   await nextNote(freshNotes, freshComments, head(note.title || note.content, 18));
 }
 

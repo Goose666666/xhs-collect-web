@@ -9,7 +9,8 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const files = ['10-util.js', '20-parse.js', '22-douyin.js',
-  '40-industry.js', '45-limits.js', '50-funnel.js', '55-reply.js', '58-csv.js'];
+  '40-industry.js', '45-limits.js', '50-funnel.js', '55-reply.js',
+  '57-draft.js', '58-ai.js', '58-csv.js'];
 
 // 这几块不碰浏览器，给个空壳就能跑
 const shim = `
@@ -30,7 +31,8 @@ vm.runInContext(code + '\nthis.API = { asInt, tsToStr, bucketOf, noteIdInUrl, ' 
   'runFunnel, INTENT_HIGH, INTENT_MID, INTENT_LOW, INTENT_RISKY, parseWants, ' +
   'wantsWords, makeReply, theirGender, csvText, peopleCsv, Trade, Limits, ' +
   'douyinBucketOf, parseDouyin, videoUrl, douyinSearchUrl, douyinUserUrl, ' +
-  'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl };', ctx);
+  'canOpenDouyinProfile, noteFromAweme, kMinGapSeconds, guessGender, stableUrl, ' +
+  'tooOld, AI, draftFor, draftMany };', ctx);
 const A = ctx.API;
 
 let pass = 0;
@@ -510,6 +512,72 @@ group('这一批怎么排', () => {
   A.Limits.batchMinutes = 20;
 });
 
-console.log('');
-console.log(fail === 0 ? '全过了，' + pass + ' 项' : pass + ' 项过，' + fail + ' 项没过');
-process.exit(fail === 0 ? 0 : 1);
+group('太老的帖子', () => {
+  const now = new Date(2026, 8, 3);
+  ok(A.tooOld('2025-06-16', 180, now), '半年前的算老');
+  ok(!A.tooOld('2026-09-01', 180, now), '这个月的不算');
+  ok(!A.tooOld('3天前', 180, now), '几天前不算');
+  ok(A.tooOld('8个月前', 180, now), '八个月前算老');
+  ok(!A.tooOld('2020-01-01', 0, now), '零就是不限，多老都不算');
+  ok(!A.tooOld('', 180, now), '读不出时间就不判它老');
+});
+
+group('搜索地址带排序', () => {
+  ok(A.searchUrl('脱单', 'hot').indexOf('popularity') > 0, '评论最多那一档');
+  ok(A.searchUrl('脱单', 'fresh').indexOf('time_descending') > 0, '最新那一档');
+  ok(A.douyinSearchUrl('脱单', 'hot').indexOf('sort_type=1') > 0,
+    '抖音没有评论最多，用最多点赞顶上');
+  ok(A.douyinSearchUrl('脱单', 'fresh').indexOf('sort_type=2') > 0, '抖音最新发布');
+});
+
+group('模型筛人', () => {
+  // 靠关键词的规则在抖音评论区里认不出人，会把看热闹的一律判成没意向。
+  // 模型判过的照它的，没判过那条再走规则。
+  const rows = [
+    { nickname: '甲', said: '那咋了 结婚要是啥好事还用得着催吗', intent_ai: '高' },
+    { nickname: '乙', said: '95年，杭州有房，想找个靠谱的', intent_ai: '低' },
+    { nickname: '丙', said: '95年，杭州有房，想找个靠谱的', intent_ai: '' },
+  ];
+  const r = A.runFunnel(rows, { intentOf: (x) => x.intent_ai });
+  eq(r.keep.map((x) => x.nickname), ['甲', '丙'],
+    '模型说高的留下，说低的扔掉，哪怕规则看法相反');
+  eq(r.stat.low, 1, '模型说低的算进没意向那一档');
+
+  const p = A.AI.judgePrompt(['想找个对象', '哈哈哈'], '找男朋友');
+  ok(p.indexOf('「找男朋友」') > 0, '按帖子的关键词判，不是笼统判');
+  ok(p.indexOf('1:想找个对象') > 0 && p.indexOf('2:哈哈哈') > 0, '按序号排开');
+  ok(A.AI.judgePrompt(['第一行' + String.fromCharCode(10) + '第二行'])
+    .indexOf('1:第一行 第二行') > 0,
+    '留言里的换行压成一行，不然序号会串');
+
+  const good = 'sk-0123456789abcdef0123456789abcdef';
+  eq(A.AI.pick('sk-zzzz' + good + String.fromCharCode(10)), good, '框里有旧的一截，只取最后那段');
+  eq(A.AI.pick('  ' + good + '  '), good, '前后的空白去掉');
+
+  const d = A.AI.draftPrompt('想找个干净的', '女', '浙江');
+  ok(d.indexOf('180到188') > 0, '男的身高只报这一档');
+  ok(d.indexOf('看你提到') > 0, '不许用这种套话开头');
+  ok(d.indexOf('浙江') > 0, '对方在哪就说自己也在那一带');
+});
+
+// ---------- 没密钥也要出话 ----------
+
+// 这一组只验没密钥那条路。填了密钥要发真请求，测试里不发。
+async function noKeyGroup() {
+  console.log('没密钥也要出话');
+  const rows = [
+    { said: '95年想找个认真谈的', who: 'u1', where: '浙江', theirSex: '女' },
+    { said: '同求', who: 'u2', where: '', theirSex: '' },
+  ];
+  A.AI.key = '';
+  const got = await A.draftMany(rows);
+  eq(got.length, 2, '几个人就几句');
+  ok(got.every((s) => s && s.length > 0), '没密钥退回规则那套，不能出空句');
+  eq(got[0], A.draftFor(rows[0]), '跟规则直接写出来的那句一模一样');
+}
+
+noKeyGroup().then(() => {
+  console.log('');
+  console.log(fail === 0 ? '全过了，' + pass + ' 项' : pass + ' 项过，' + fail + ' 项没过');
+  process.exit(fail === 0 ? 0 : 1);
+});

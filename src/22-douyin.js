@@ -44,9 +44,13 @@ function videoUrl(id) {
 }
 
 // 抖音的搜索页，type=general 是综合，视频和用户都在里面。
-function douyinSearchUrl(keyword) {
+// sort_type：0 综合，1 最多点赞，2 最新发布。评论最多那一档抖音没有，
+// 用最多点赞顶上，热帖底下的人本来就多。
+function douyinSearchUrl(keyword, sort) {
+  const t = sort === 'hot' ? '1' : '2';
   return 'https://www.douyin.com/search/' +
-    encodeURIComponent(asText(keyword).trim()) + '?type=general';
+    encodeURIComponent(asText(keyword).trim()) +
+    '?type=general&publish_time=0&sort_type=' + t;
 }
 
 // 主页地址只认 sec_uid，那是一串带字母的长码。
@@ -315,8 +319,10 @@ function bucketHere(url) {
 }
 
 // 按当前平台拼搜索页地址。
-function searchUrlHere(keyword) {
-  return onDouyin() ? douyinSearchUrl(keyword) : searchUrl(keyword);
+function searchUrlHere(keyword, sort) {
+  return onDouyin()
+    ? douyinSearchUrl(keyword, sort)
+    : searchUrl(keyword, sort);
 }
 
 // 按当前平台拼作品地址。
