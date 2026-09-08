@@ -535,6 +535,8 @@ def main():
         print('私信记录')
         page.click('.xhsc-tab >> nth=3')
         page.wait_for_timeout(600)
+        page.locator('.xhsc-num', has_text='我发的私信').click()
+        page.wait_for_timeout(400)
         check('还没私信过' in page.inner_text('.xhsc-body'), '还没发过就明说')
 
         # ---------- 发私信 ----------
@@ -581,6 +583,7 @@ def main():
         print('私信记录页')
         dm.click('.xhsc-fab')
         dm.click('.xhsc-tab >> nth=3')
+        dm.locator('.xhsc-num', has_text='我发的私信').click()
         dm.wait_for_timeout(600)
         sent_text = dm.inner_text('.xhsc-body')
         check('小明' in sent_text, '记录里有这个人')
@@ -730,6 +733,8 @@ def main():
 
         con.click('.tabs button[data-tab=sent]')
         con.wait_for_timeout(1200)
+        con.locator('#pane-sent .tabs button', has_text='我发的私信').click()
+        con.wait_for_timeout(1000)
         check('还没私信过' in con.inner_text('#pane-sent'), '私信记录')
         views = con.locator('#pane-sent .tabs button').all_text_contents()
         check(len(views) == 5, '消息页也分五档 ' + str(views))
@@ -743,7 +748,7 @@ def main():
             user_id: 'u21', site: '小红书', trade: 'love',
           }]);
         }""")
-        con.locator('#pane-sent .tabs button', has_text='回复我的').click()
+        con.locator('#pane-sent .tabs button', has_text='评论我的').click()
         con.wait_for_timeout(1200)
         itext = con.inner_text('#pane-sent')
         check('爱吃辣的鱼' in itext, '回复我的那一档是那边给的 ' + itext[:60])
@@ -908,10 +913,10 @@ def main():
         y.wait_for_timeout(600)
         nums = y.locator('.xhsc-num').all_text_contents()
         check(len(nums) == 5, '五档 ' + str(nums))
-        y.click('.xhsc-num >> nth=3')
+        y.locator('.xhsc-num', has_text='评论我的').click()
         y.wait_for_timeout(400)
         seen = y.inner_text('.xhsc-body')
-        check('爱吃辣的鱼' in seen, '回复我的那一档里有他')
+        check('爱吃辣的鱼' in seen, '评论我的那一档里有他')
         check('回复了你的评论' in seen, '那句原话也摆出来了')
         check(not yerrs, '取新消息这一路没有报错 ' + str(yerrs))
 
